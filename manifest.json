@@ -1,8 +1,8 @@
 {
-    "name": "copipable",
-    "short_name": "copipable",
+    "name": "memable",
+    "short_name": "memable",
     "description": "A temporary copy & paste memo management web app.",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#fffb85",

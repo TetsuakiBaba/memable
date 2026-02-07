@@ -1,66 +1,53 @@
 // state
 let notes = [];
-const storageKey = 'copipableNotes';
+const storageKey = 'memableNotes';
 
 const workspace = document.getElementById('workspace');
-const saveButton = document.getElementById('save-button');
-const clearAllButton = document.getElementById('clear-all-button');
-const noteInput = document.getElementById('note-input');
-const gridToggle = document.getElementById('grid-toggle');
 // load grid snap state from localStorage
 const savedGridSnap = localStorage.getItem('gridSnapEnabled');
 let isGridSnap = savedGridSnap === 'true';
+const gridToggle = document.getElementById('grid-toggle');
+const clearAllButton = document.getElementById('clear-all-button');
+
+// z-index 管理用
+let maxZIndex = 1000;
+
 // ボタン表示更新関数
 function updateGridToggleButton() {
-    gridToggle.innerHTML = `<i class="bi bi-grid-3x3-gap"></i> Grid: ${isGridSnap ? 'ON' : 'OFF'}`;
+    if (gridToggle) {
+        gridToggle.innerHTML = `<span class="material-symbols-outlined">grid_4x4</span> <span class="btn-text">Grid: ${isGridSnap ? 'ON' : 'OFF'}</span>`;
+    }
 }
 // initialize button state
 updateGridToggleButton();
 
-gridToggle.addEventListener('click', () => {
-    isGridSnap = !isGridSnap;
-    // save to localStorage
-    localStorage.setItem('gridSnapEnabled', isGridSnap);
-    updateGridToggleButton();
-});
+if (gridToggle) {
+    gridToggle.addEventListener('click', () => {
+        isGridSnap = !isGridSnap;
+        // save to localStorage
+        localStorage.setItem('gridSnapEnabled', isGridSnap);
+        updateGridToggleButton();
+    });
+}
 function snap(val) {
     return isGridSnap ? Math.round(val / 25) * 25 : val;
 }
 
-// カラーオプション
+// カラーオプション (M3-like Container Colors)
 const COLORS = [
-    { name: 'yellow', hex: '#fffb85' },
-    { name: 'blue', hex: '#d0e7ff' },
-    { name: 'green', hex: '#d1ffd1' },
-    { name: 'red', hex: '#ffd1d1' },
-    { name: 'gray', hex: '#e0e0e0' },
-    { name: 'pink', hex: '#ffd1e5' }
+    { name: 'yellow', hex: '#F9E264' },
+    { name: 'blue', hex: '#D0E4FF' },
+    { name: 'green', hex: '#C4EBC1' },
+    { name: 'red', hex: '#FFDAD6' },
+    { name: 'gray', hex: '#E6E1E5' },
+    { name: 'pink', hex: '#FFD8E4' }
 ];
 // デフォルトカラー読み込み
 let defaultNoteColor = localStorage.getItem('defaultNoteColor') || 'yellow';
-// 入力エリア用カラーパネル
-const inputColorPanel = document.getElementById('input-color-panel');
-function renderInputColorPanel() {
-    inputColorPanel.innerHTML = '';
-    COLORS.forEach(c => {
-        const sw = document.createElement('div');
-        sw.className = 'color-swatch';
-        sw.style.backgroundColor = c.hex;
-        sw.dataset.color = c.name;
-        if (c.name === defaultNoteColor) sw.classList.add('selected');
-        sw.addEventListener('click', () => {
-            defaultNoteColor = c.name;
-            localStorage.setItem('defaultNoteColor', defaultNoteColor);
-            renderInputColorPanel();
-        });
-        inputColorPanel.appendChild(sw);
-    });
-}
-renderInputColorPanel();
 
 // IndexedDB 初期化
 const dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open('copipable-db', 1);
+    const req = indexedDB.open('memable-db', 1);
     req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('notes')) db.createObjectStore('notes', { keyPath: 'id' });
@@ -121,7 +108,10 @@ async function assignNoteIds() {
         const noteEl = workspace.querySelector(`[data-id='${note.id}']`);
         if (noteEl) {
             const idEl = noteEl.querySelector('.note-id');
-            if (idEl) idEl.textContent = `${keyId}`;
+            if (idEl) {
+                idEl.textContent = `${keyId}`;
+                idEl.title = `ショートカットキー: ${keyId}`;
+            }
         }
     }
 }
@@ -160,6 +150,23 @@ function showCopyFeedback() {
     }, 1000);
 }
 
+// アイコンのフィードバック (3秒間チェックマークにする共通関数)
+function showIconFeedback(note) {
+    const noteEl = workspace.querySelector(`[data-id='${note.id}']`);
+    if (noteEl) {
+        // header-actions 内の最初のボタン（コピーボタン）を取得
+        const copyBtn = noteEl.querySelector('.header-actions .btn');
+        const iconSpan = copyBtn ? copyBtn.querySelector('.material-symbols-outlined') : null;
+        if (iconSpan) {
+            const originalIcon = iconSpan.textContent;
+            iconSpan.textContent = 'check';
+            setTimeout(() => {
+                iconSpan.textContent = originalIcon;
+            }, 3000);
+        }
+    }
+}
+
 // ノートをコピーする共通関数
 async function handleCopy(note) {
     if (note.type === 'text') {
@@ -175,17 +182,57 @@ async function handleCopy(note) {
         }
     }
     showCopyFeedback();
+    showIconFeedback(note);
+}
+
+// テキストに合わせてノートの高さを自動調整する関数
+function autoResizeNote(noteEl, note) {
+    if (note.type !== 'text') return;
+    const content = noteEl.querySelector('.note-content');
+    if (!content) return;
+
+    // 一旦高さをautoにして実際の内容量を確認
+    const originalHeight = noteEl.style.height;
+    noteEl.style.height = 'auto';
+    const headerHeight = noteEl.querySelector('.note-header').offsetHeight;
+    const contentHeight = content.scrollHeight;
+    const padding = 24; // .note-content の上下 padding 合計付近
+
+    const newHeight = headerHeight + contentHeight + padding;
+
+    // スナップさせる
+    const snappedHeight = snap(newHeight);
+
+    // 最小サイズを下回らないように
+    const finalHeight = Math.max(snappedHeight, 100);
+
+    noteEl.style.height = finalHeight + 'px';
+
+    // DB更新
+    if (parseInt(originalHeight) !== finalHeight) {
+        note.height = finalHeight;
+        updateNoteDB(note);
+    }
 }
 
 // create and append note element
 function renderNote(note) {
     // ノートにcolorがなければdefaultNoteColorを設定
     if (!note.color) note.color = defaultNoteColor;
+    // zIndex がない場合は現在の最小値を割り当て
+    if (note.zIndex === undefined) {
+        note.zIndex = maxZIndex++;
+        updateNoteDB(note);
+    } else {
+        // maxZIndex を更新して次以降の重なりを担保
+        if (note.zIndex >= maxZIndex) maxZIndex = note.zIndex + 1;
+    }
+
     // DB更新（マイグレーション対応）
     if (!note.color || !note.width || !note.height) updateNoteDB(note);
     // 既存ノートに幅・高さがない場合はデフォルトを設定
     if (!note.width || !note.height) {
-        note.width = note.width || 200;
+        note.width = note.width || 250;
         note.height = note.height || 200;
         updateNoteDB(note);
     }
@@ -199,39 +246,38 @@ function renderNote(note) {
     noteEl.style.top = note.y + 'px';
     noteEl.style.width = note.width + 'px';
     noteEl.style.height = note.height + 'px';
+    noteEl.style.zIndex = note.zIndex; // 保存された zIndex を適用
     noteEl.dataset.id = note.id;
     // 背景色設定
     noteEl.style.backgroundColor = COLORS.find(c => c.name === note.color).hex;
 
+    // クリック（mousedown）したときに最前面へ
+    noteEl.addEventListener('mousedown', async () => {
+        const newZ = maxZIndex++;
+        noteEl.style.zIndex = newZ;
+        note.zIndex = newZ;
+        await updateNoteDB(note); // zIndex の変更を保存
+    });
+
     // header
     const header = document.createElement('div');
     header.className = 'note-header';
-    // キーIDラベル
-    const idLabel = document.createElement('div');
-    idLabel.className = 'note-id badge position-absolute top-0 small start-0 translate-start bg-secondary rounded-pill';
-    idLabel.textContent = note.keyId || '';
-    if (!window.electronAPI) idLabel.classList.add('invisible');
 
-    // copy button
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'btn btn-sm btn-light';
-    copyBtn.innerHTML = '<i class="bi bi-clipboard"></i>';
-    copyBtn.title = 'コピー';
-    // delete button
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'btn btn-sm btn-light text-danger';
-    deleteBtn.innerHTML = '<i class="bi bi-trash"></i>';
-    deleteBtn.title = '削除';
-    // ボタンをグループ化
-    const btnGroup = document.createElement('div');
-    btnGroup.className = 'btn-group-custom';
-    // ボタンを横並びにする行を作成
-    const btnRow = document.createElement('div');
-    btnRow.className = 'btn-row';
-    btnRow.appendChild(copyBtn);
-    btnRow.appendChild(deleteBtn);
-    btnGroup.appendChild(btnRow);
-    // カラーパネル（メモ上部）
+    // ID Container
+    const idContainer = document.createElement('div');
+    idContainer.className = 'note-id-container';
+    const idLabel = document.createElement('div');
+    idLabel.className = 'note-id';
+    idLabel.textContent = note.keyId || '';
+    idLabel.title = 'ショートカットキー';
+    idContainer.appendChild(idLabel);
+    header.appendChild(idContainer);
+
+    // Right-aligned container for colors and buttons
+    const headerRight = document.createElement('div');
+    headerRight.className = 'header-right-group';
+
+    // Color Panel (One-row)
     const noteColorPanel = document.createElement('div');
     noteColorPanel.className = 'color-panel';
     COLORS.forEach(c => {
@@ -240,8 +286,13 @@ function renderNote(note) {
         sw.style.backgroundColor = c.hex;
         sw.dataset.color = c.name;
         if (c.name === note.color) sw.classList.add('selected');
-        sw.addEventListener('click', async () => {
+        sw.addEventListener('click', async (e) => {
+            e.stopPropagation(); // Prevent drag on color click
             note.color = c.name;
+            // 次回からのデフォルトカラーを更新
+            defaultNoteColor = c.name;
+            localStorage.setItem('defaultNoteColor', defaultNoteColor);
+
             await updateNoteDB(note);
             noteEl.style.backgroundColor = c.hex;
             noteColorPanel.querySelectorAll('.color-swatch').forEach(el => el.classList.remove('selected'));
@@ -249,22 +300,49 @@ function renderNote(note) {
         });
         noteColorPanel.appendChild(sw);
     });
-    noteEl.appendChild(idLabel);
-    btnGroup.appendChild(noteColorPanel);
-    header.appendChild(btnGroup);
+    headerRight.appendChild(noteColorPanel);
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'header-actions';
+
+    // copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'btn';
+    copyBtn.innerHTML = '<span class="material-symbols-outlined">content_copy</span>';
+    copyBtn.title = 'コピー';
+
+    // delete button
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn text-danger';
+    deleteBtn.innerHTML = '<span class="material-symbols-outlined">delete</span>';
+    deleteBtn.title = '削除';
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(deleteBtn);
+    headerRight.appendChild(actions);
+
+    header.appendChild(headerRight);
+
     noteEl.appendChild(header);
+
+
+
 
     // content
     const content = document.createElement('div');
     content.className = 'note-content';
     if (note.type === 'text') {
         content.textContent = note.content;
+        content.contentEditable = "true"; // HTML5 contenteditable を有効化
+        content.spellcheck = false;
     } else if (note.type === 'image') {
         const img = document.createElement('img');
         img.src = note.content;
         content.appendChild(img);
     }
     noteEl.appendChild(content);
+
 
     // size indicator
     const sizeEl = document.createElement('span');
@@ -273,6 +351,11 @@ function renderNote(note) {
     noteEl.appendChild(sizeEl);
 
     workspace.appendChild(noteEl);
+
+    // 初期表示時に自動リサイズ
+    if (note.type === 'text') {
+        autoResizeNote(noteEl, note);
+    }
 
     // events
     // drag
@@ -343,27 +426,33 @@ function renderNote(note) {
         await assignNoteIds();
     });
 
-    // edit on double-click
+    // edit logic
+    if (note.type === 'text') {
+        content.addEventListener('input', () => {
+            note.content = content.innerText;
+            autoResizeNote(noteEl, note);
+
+            // update size display
+            const sizeEl = noteEl.querySelector('.note-size');
+            if (sizeEl) sizeEl.textContent = `${new Blob([note.content]).size} bytes`;
+        });
+
+        content.addEventListener('blur', async () => {
+            note.content = content.innerText;
+            await updateNoteDB(note);
+        });
+
+        // Cmd/Ctrl + Enter で編集終了（フォーカスを外す）
+        content.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                content.blur();
+            }
+        });
+    }
+
     content.addEventListener('dblclick', () => {
-        if (note.type === 'text') {
-            const textarea = document.createElement('textarea');
-            textarea.className = 'form-control';
-            textarea.value = note.content;
-            // 現在の改行数に合わせて縦幅を設定
-            const lines = (note.content.match(/\r?\n/g) || []).length + 1;
-            textarea.rows = lines;
-            noteEl.replaceChild(textarea, content);
-            textarea.focus();
-            textarea.addEventListener('blur', async () => {
-                note.content = textarea.value;
-                await updateNoteDB(note);
-                // update size display
-                const sizeEl = noteEl.querySelector('.note-size');
-                sizeEl.textContent = `${new Blob([note.content]).size} bytes`;
-                content.textContent = note.content;
-                noteEl.replaceChild(content, textarea);
-            });
-        } else if (note.type === 'image') {
+        if (note.type === 'image') {
             // 画像をモーダルで拡大表示
             const modalImage = document.getElementById('modalImage');
             modalImage.src = note.content;
@@ -374,82 +463,51 @@ function renderNote(note) {
 }
 
 // add new text note
-saveButton.addEventListener('click', async () => {
-    const text = noteInput.value.trim();
-    if (!text) return;
-    const note = { id: generateId(), type: 'text', content: text, x: snap(10), y: snap(10), width: 200, height: 200, color: defaultNoteColor };
+async function createNewNote(text, x = snap(10), y = snap(10)) {
+    const note = {
+        id: generateId(),
+        type: 'text',
+        content: text,
+        x: x,
+        y: y,
+        width: 250,
+        height: 200,
+        color: defaultNoteColor,
+        zIndex: maxZIndex++ // 新規作成時も zIndex を保存
+    };
     await addNoteDB(note);
     notes.push(note);
     renderNote(note);
     updateNoteCount();
     await assignNoteIds();
-    noteInput.value = '';
-});
+}
 
-// Save shortcut: Mac uses Cmd+Enter, Windows uses Ctrl+Enter
-noteInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && ((navigator.platform.includes('Mac') && e.metaKey) || (!navigator.platform.includes('Mac') && e.ctrlKey))) {
-        e.preventDefault();
-        saveButton.click();
-    }
-});
+// ダブルクリックで新規メモ作成
+workspace.addEventListener('dblclick', async (e) => {
+    // ノート自体やノート内の要素をクリックした場合は何もしない
+    if (e.target !== workspace) return;
 
-// paste で画像対応
-noteInput.addEventListener('paste', async e => {
-    const items = Array.from(e.clipboardData.items);
-    for (const item of items) {
-        if (item.kind === 'file') {
-            const file = item.getAsFile();
-            if (file && file.type.startsWith('image/')) {
-                const reader = new FileReader();
-                reader.onload = async () => {
-                    const dataUrl = reader.result;
-                    const note = { id: generateId(), type: 'image', content: dataUrl, x: snap(10), y: snap(10), width: 200, height: 200, color: defaultNoteColor };
-                    await addNoteDB(note);
-                    notes.push(note);
-                    renderNote(note);
-                    updateNoteCount();
-                    await assignNoteIds();
-                };
-                reader.readAsDataURL(file);
-                e.preventDefault();
-            }
-        }
-    }
-});
+    // クリック位置を取得してスナップ
+    const x = snap(e.offsetX);
+    const y = snap(e.offsetY);
 
-// enable image drag-and-drop on textarea
-// highlight drop zone on drag
-noteInput.addEventListener('dragenter', e => {
-    e.preventDefault();
-    noteInput.classList.add('drag-over');
-});
-noteInput.addEventListener('dragleave', e => {
-    noteInput.classList.remove('drag-over');
-});
+    // 空のメモを作成
+    await createNewNote('New Note', x, y);
 
-noteInput.addEventListener('dragover', e => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    noteInput.classList.add('drag-over');
-});
-noteInput.addEventListener('drop', async e => {
-    e.preventDefault();
-    noteInput.classList.remove('drag-over');
-    const files = Array.from(e.dataTransfer.files || []);
-    for (const file of files) {
-        if (file.type.startsWith('image/')) {
-            const reader = new FileReader();
-            reader.onload = async () => {
-                const dataUrl = reader.result;
-                const note = { id: generateId(), type: 'image', content: dataUrl, x: snap(10), y: snap(10), width: 200, height: 200, color: defaultNoteColor };
-                await addNoteDB(note);
-                notes.push(note);
-                renderNote(note);
-                updateNoteCount();
-                await assignNoteIds();
-            };
-            reader.readAsDataURL(file);
+    // 作成されたメモを自動的に編集モードにする（最後の要素がそれ）
+    const lastNote = notes[notes.length - 1];
+    const noteEl = workspace.querySelector(`[data-id='${lastNote.id}']`);
+    if (noteEl) {
+        const contentEl = noteEl.querySelector('.note-content');
+        if (contentEl) {
+            contentEl.focus();
+            // カーソルを末尾に移動（任意ですが使い勝手向上のため）
+            const range = document.createRange();
+            const sel = window.getSelection();
+            range.selectNodeContents(contentEl);
+            range.collapse(false);
+            sel.removeAllRanges();
+            sel.addRange(range);
         }
     }
 });
@@ -459,6 +517,45 @@ const globalDropZone = document.createElement('div');
 globalDropZone.id = 'global-drop-zone';
 globalDropZone.textContent = 'ここに画像をドロップ';
 document.body.appendChild(globalDropZone);
+
+// 画像の貼り付け対応
+document.addEventListener('paste', async e => {
+    // 入力要素（textarea等）でのペーストは無視（編集中のノートなど）
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+
+    const items = Array.from(e.clipboardData.items);
+    for (const item of items) {
+        if (item.kind === 'file') {
+            const file = item.getAsFile();
+            if (file && file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = async () => {
+                    const dataUrl = reader.result;
+                    // 画面中央付近に配置
+                    const x = snap((window.innerWidth - 200) / 2);
+                    const y = snap((window.innerHeight - 200) / 2);
+                    const note = {
+                        id: generateId(),
+                        type: 'image',
+                        content: dataUrl,
+                        x: x,
+                        y: y,
+                        width: 200,
+                        height: 200,
+                        color: defaultNoteColor,
+                        zIndex: maxZIndex++ // paste時も zIndex を保存
+                    };
+                    await addNoteDB(note);
+                    notes.push(note);
+                    renderNote(note);
+                    updateNoteCount();
+                    await assignNoteIds();
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+    }
+});
 
 // 全画面ドラッグ＆ドロップイベント
 // 画像ファイルドラッグ時にオーバーレイ表示
@@ -539,23 +636,14 @@ fetch('manifest.json')
     })
     .catch(err => console.error('Failed to load manifest version', err));
 
-// Electron グローバルショートカット経由でペースト
 if (window.electronAPI && window.electronAPI.onPasteNote) {
     window.electronAPI.onPasteNote(async (key) => {
         const note = notes.find(n => n.keyId === key);
         if (!note) return;
-        if (note.type === 'text') {
-            await navigator.clipboard.writeText(note.content);
-        } else if (note.type === 'image') {
-            try {
-                const res = await fetch(note.content);
-                const blob = await res.blob();
-                const item = new ClipboardItem({ [blob.type]: blob });
-                await navigator.clipboard.write([item]);
-            } catch (err) {
-                console.error('画像のコピーに失敗しました', err);
-            }
-        }
+
+        // 共通のコピー処理を実行（アイコン・通知フィードバック含む）
+        await handleCopy(note);
+
         // フォーカス中の要素に直接貼り付け
         const active = document.activeElement;
         if (note.type === 'text' && active && (active.tagName === 'TEXTAREA' || (active.tagName === 'INPUT' && /text|search|url|tel|password/.test(active.type)))) {
@@ -577,6 +665,7 @@ if (window.electronAPI && window.electronAPI.onRequestNote) {
         const note = notes.find(n => n.keyId === key);
         if (!note) return;
         window.electronAPI.sendDeliverNote(key, note.type, note.content);
+        showIconFeedback(note); // アイコンを変化させる
     });
 }
 
@@ -589,7 +678,46 @@ if (window.electronAPI && window.electronAPI.onCopyNote) {
     });
 }
 
-// ※ ウィンドウ内keydownショートカットは廃止しました。
+// ウィンドウ内ショートカット (ブラウザ動作時およびフォーカス時用)
+window.addEventListener('keydown', async (e) => {
+    // 入力中（編集中のメモ、input, textarea）は無視
+    if (e.target.tagName === 'INPUT' ||
+        e.target.tagName === 'TEXTAREA' ||
+        e.target.isContentEditable) {
+        return;
+    }
+
+    // 修飾キー（Ctrl, Cmd, Alt, Shift）が押されている場合はブラウザ標準機能を優先
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+
+    const key = e.key.toLowerCase();
+    const note = notes.find(n => n.keyId === key);
+    if (note) {
+        e.preventDefault();
+        await handleCopy(note);
+    }
+});
+
+// キャンバス操作ヒントの作成と制御
+const canvasHint = document.createElement('div');
+canvasHint.className = 'canvas-hint';
+canvasHint.textContent = 'Double-click to create a note';
+document.body.appendChild(canvasHint);
+
+workspace.addEventListener('mousemove', (e) => {
+    // ワークスペース自体（またはそこにあるドロップゾーン）の上でのみヒントを表示
+    if (e.target === workspace || e.target.id === 'global-drop-zone') {
+        canvasHint.classList.add('visible');
+        canvasHint.style.left = (e.clientX + 15) + 'px';
+        canvasHint.style.top = (e.clientY + 15) + 'px';
+    } else {
+        canvasHint.classList.remove('visible');
+    }
+});
+
+workspace.addEventListener('mouseleave', () => {
+    canvasHint.classList.remove('visible');
+});
 
 // init
 loadNotes().then(() => {
