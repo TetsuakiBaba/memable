@@ -412,6 +412,65 @@ function showToast(message) {
 
 let groupModalInstance = null;
 
+/**
+ * グループ名入力用のモーダルを表示する
+ * @param {string} title モダールのタイトル
+ * @param {string} defaultValue デフォルトの入力値
+ * @returns {Promise<string|null>} 保存された名前、またはキャンセル時は null
+ */
+function showGroupModal(title, defaultValue = '') {
+    const modalEl = document.getElementById('groupModal');
+    const titleEl = document.getElementById('groupModalTitle');
+    const inputEl = document.getElementById('group-name-input');
+    const saveBtn = document.getElementById('group-modal-save');
+
+    if (!groupModalInstance) {
+        groupModalInstance = new bootstrap.Modal(modalEl);
+    }
+
+    titleEl.textContent = title;
+    inputEl.value = defaultValue;
+
+    return new Promise((resolve) => {
+        const handleSave = () => {
+            const name = inputEl.value.trim();
+            if (name) {
+                cleanup();
+                groupModalInstance.hide();
+                resolve(name);
+            }
+        };
+
+        const handleCancel = () => {
+            cleanup();
+            resolve(null);
+        };
+
+        const handleKeydown = (e) => {
+            if (e.key === 'Enter') {
+                handleSave();
+            }
+        };
+
+        const cleanup = () => {
+            saveBtn.removeEventListener('click', handleSave);
+            modalEl.removeEventListener('hidden.bs.modal', handleCancel);
+            inputEl.removeEventListener('keydown', handleKeydown);
+        };
+
+        saveBtn.addEventListener('click', handleSave);
+        modalEl.addEventListener('hidden.bs.modal', handleCancel);
+        inputEl.addEventListener('keydown', handleKeydown);
+
+        groupModalInstance.show();
+
+        modalEl.addEventListener('shown.bs.modal', () => {
+            inputEl.focus();
+            inputEl.select();
+        }, { once: true });
+    });
+}
+
 async function loadGroups() {
     groups = await getAllGroupsDB();
     if (groups.length === 0) {
@@ -1124,6 +1183,7 @@ window.addEventListener('keydown', async (e) => {
     }
 
     if (e.altKey || e.shiftKey) return;
+    const key = e.key;
     const note = notes.find(n => n.keyId === key);
     if (note) {
         e.preventDefault();
