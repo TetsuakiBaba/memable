@@ -10,13 +10,59 @@ let mainWindow;
 
 // --- Persistence for Settings ---
 const configPath = path.join(app.getPath('userData'), 'config.json');
-let config = { externalPath: null };
+let config = { externalPath: null, globalShortcutsEnabled: false };
+let watcher = null;
+let lastInternalWriteTime = 0;
+
 try {
     if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        config = { ...config, ...JSON.parse(fs.readFileSync(configPath, 'utf8')) };
     }
 } catch (e) {
     console.error('Failed to load config', e);
+}
+
+function registerShortcuts() {
+    globalShortcut.unregisterAll();
+    if (!config.globalShortcutsEnabled) return;
+
+    // Keys cover 0-9 and a-z
+    const keys = [
+        ...[...Array(10).keys()].map(i => String((i + 1) % 10)),
+        ...[...Array(26).keys()].map(i => String.fromCharCode(97 + i))
+    ];
+
+    // Global shortcut for "Paste" only (Copy content to clipboard and trigger system paste)
+    // Shortcut: CommandOrControl+Alt+${key} (for macOS: Command+Option+${key})
+    keys.forEach(key => {
+        const accelerator = `CommandOrControl+Alt+${key}`;
+        globalShortcut.register(accelerator, () => {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('paste-note', key);
+            }
+        });
+    });
+}
+
+function startWatching() {
+    if (watcher) {
+        watcher.close();
+        watcher = null;
+    }
+
+    if (config.externalPath && fs.existsSync(config.externalPath)) {
+        console.log(`Watching for changes in: ${config.externalPath}`);
+        watcher = fs.watch(config.externalPath, (eventType, filename) => {
+            // 自分の書き込みから1秒以内なら無視
+            if (Date.now() - lastInternalWriteTime < 1000) return;
+
+            if (filename === 'notes.json' || filename === 'groups.json') {
+                if (mainWindow) {
+                    mainWindow.webContents.send('external-data-changed');
+                }
+            }
+        });
+    }
 }
 
 function saveConfig() {
@@ -44,35 +90,18 @@ function createWindow() {
 
 app.whenReady().then(() => {
     mainWindow = createWindow();
-    // グローバルショートカット登録
-    globalShortcut.unregisterAll();
-    const keys = [...Array(10).keys()].map(i => String(i));
-    // keys = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-    // Note: mapping 1-9 to 1-9, and 10 to 0
-
-    // Copy: CommandOrControl+1-9, 0
-    keys.forEach(key => {
-        const accelerator = `CommandOrControl+${key}`;
-        const registered = globalShortcut.register(accelerator, () => {
-            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-                mainWindow.webContents.send('request-note', key);
-            }
-        });
-        if (!registered) console.warn(`Failed to register global shortcut: ${accelerator}`);
-    });
-    // Paste: CommandOrControl+Alt+1-9, 0
-    keys.forEach(key => {
-        const accelerator = `CommandOrControl+Alt+${key}`;
-        const registered = globalShortcut.register(accelerator, () => {
-            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-                mainWindow.webContents.send('paste-note', key);
-            }
-        });
-        if (!registered) console.warn(`Failed to register global shortcut: ${accelerator}`);
-    });
+    startWatching();
+    registerShortcuts();
 });
 
 // --- IPC Handlers for Storage ---
+ipcMain.handle('toggle-shortcuts', async (event, enabled) => {
+    config.globalShortcutsEnabled = enabled;
+    saveConfig();
+    registerShortcuts();
+    return config.globalShortcutsEnabled;
+});
+
 ipcMain.handle('select-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openDirectory']
@@ -80,6 +109,7 @@ ipcMain.handle('select-directory', async () => {
     if (result.canceled) return null;
     config.externalPath = result.filePaths[0];
     saveConfig();
+    startWatching();
     return config.externalPath;
 });
 
@@ -88,12 +118,14 @@ ipcMain.handle('get-config', () => config);
 ipcMain.handle('reset-config', () => {
     config = { externalPath: null };
     saveConfig();
+    startWatching();
     return true;
 });
 
 ipcMain.handle('save-external-data', async (event, filename, data) => {
     if (!config.externalPath) return false;
     try {
+        lastInternalWriteTime = Date.now();
         const filePath = path.join(config.externalPath, filename);
         fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
         return true;

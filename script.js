@@ -4,6 +4,7 @@ let groups = [];
 let currentGroupId = localStorage.getItem('currentGroupId') || 'default';
 let storageMode = 'indexeddb'; // 'indexeddb' or 'external'
 let externalPath = null;
+let globalShortcutsEnabled = false;
 const storageKey = 'memableNotes';
 
 // --- Undo Logic ---
@@ -12,25 +13,49 @@ let lastDeletedNote = null;
 const workspace = document.getElementById('workspace');
 const groupList = document.getElementById('group-list');
 const addGroupButton = document.getElementById('add-group-button');
+const shortcutToggleSwitch = document.getElementById('shortcut-toggle-switch');
 
-// --- Storage Switch Logic ---
-async function initStorageMode() {
+// --- Storage & Settings Logic ---
+async function initSettings() {
     if (window.electronAPI) {
         const config = await window.electronAPI.getStorageConfig();
-        if (config && config.externalPath) {
-            storageMode = 'external';
-            externalPath = config.externalPath;
-            updateSettingsUI();
-            return;
+        if (config) {
+            if (config.externalPath) {
+                storageMode = 'external';
+                externalPath = config.externalPath;
+            }
+            globalShortcutsEnabled = config.globalShortcutsEnabled;
+            updateShortcutToggleUI();
         }
     }
-    storageMode = 'indexeddb';
     updateSettingsUI();
+}
+
+function updateShortcutToggleUI() {
+    if (shortcutToggleSwitch) {
+        shortcutToggleSwitch.checked = globalShortcutsEnabled;
+    }
+}
+
+if (shortcutToggleSwitch) {
+    shortcutToggleSwitch.addEventListener('change', async () => {
+        if (window.electronAPI) {
+            const newState = shortcutToggleSwitch.checked;
+            globalShortcutsEnabled = await window.electronAPI.toggleShortcuts(newState);
+            updateShortcutToggleUI();
+            showToast(`Global Shortcuts: ${globalShortcutsEnabled ? 'Enabled' : 'Disabled'}`);
+        } else {
+            shortcutToggleSwitch.checked = false;
+            showToast('Global shortcuts only available in Desktop App');
+        }
+    });
 }
 
 function updateSettingsUI() {
     const pathDisplay = document.getElementById('storage-path-display');
     const statusBox = document.getElementById('storage-status');
+    const themeToggle = document.getElementById('themeToggle');
+
     if (pathDisplay) {
         pathDisplay.value = externalPath || 'IndexedDB (Standard)';
     }
@@ -42,6 +67,10 @@ function updateSettingsUI() {
             statusBox.classList.add('d-none');
         }
     }
+    if (themeToggle) {
+        themeToggle.checked = document.body.classList.contains('dark-mode');
+    }
+    updateShortcutToggleUI();
 }
 
 // データ保存時に外部ストレージが有効なら書き込む
@@ -58,35 +87,43 @@ async function syncToExternalIfNeeded() {
 // 起動時に外部ストレージからデータを読み込む
 async function syncFromExternalIfNeeded() {
     if (storageMode === 'external' && window.electronAPI) {
-        const extNotes = await window.electronAPI.loadExternalData('notes.json');
-        const extGroups = await window.electronAPI.loadExternalData('groups.json');
+        try {
+            const extNotes = await window.electronAPI.loadExternalData('notes.json');
+            const extGroups = await window.electronAPI.loadExternalData('groups.json');
 
-        if (extNotes || extGroups) {
-            const db = await dbPromise;
-            const tx = db.transaction(['notes', 'groups'], 'readwrite');
-            
-            if (extNotes) {
-                const noteStore = tx.objectStore('notes');
-                noteStore.clear();
-                for (const note of extNotes) {
-                    noteStore.put(note);
-                }
-            }
-            
-            if (extGroups) {
-                const groupStore = tx.objectStore('groups');
-                groupStore.clear();
-                for (const group of extGroups) {
-                    groupStore.put(group);
-                }
-            }
+            if (extNotes || extGroups) {
+                const db = await dbPromise;
+                const tx = db.transaction(['notes', 'groups'], 'readwrite');
 
-            return new Promise((resolve) => {
-                tx.oncomplete = () => {
-                    console.log('Synced from external storage');
-                    resolve();
-                };
-            });
+                if (extNotes) {
+                    const noteStore = tx.objectStore('notes');
+                    noteStore.clear();
+                    for (const note of extNotes) {
+                        noteStore.put(note);
+                    }
+                }
+
+                if (extGroups) {
+                    const groupStore = tx.objectStore('groups');
+                    groupStore.clear();
+                    for (const group of extGroups) {
+                        groupStore.put(group);
+                    }
+                }
+
+                return new Promise((resolve) => {
+                    tx.oncomplete = () => {
+                        console.log('Synced from external storage');
+                        resolve();
+                    };
+                    tx.onerror = () => {
+                        console.error('Transaction error during sync', tx.error);
+                        resolve();
+                    };
+                });
+            }
+        } catch (err) {
+            console.error('Failed to sync from external storage:', err);
         }
     }
 }
@@ -625,6 +662,65 @@ function updateNoteCount() {
     if (counter) counter.textContent = notes.length;
 }
 
+// Align notes to grid
+async function alignNotes() {
+    if (notes.length === 0) return;
+
+    // Sort notes by updated time
+    const sortedNotes = [...notes].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+    const MARGIN = 40;
+    const SPACING = 20;
+    const workspaceWidth = workspace.clientWidth;
+
+    let currentX = MARGIN;
+    let currentY = MARGIN;
+    let maxHeightInRow = 0;
+
+    const db = await dbPromise;
+    const transaction = db.transaction(['notes'], 'readwrite');
+    const store = transaction.objectStore('notes');
+    const updates = [];
+
+    for (const note of sortedNotes) {
+        // Prefer stored dimensions over DOM measurement to avoid drifting/rounding issues
+        const w = note.width || 250;
+        const h = note.height || 150;
+
+        // If note exceeds workspace width, move to next row (if not the first item in row)
+        if (currentX + w + MARGIN > workspaceWidth && currentX > MARGIN) {
+            currentX = MARGIN;
+            currentY += maxHeightInRow + SPACING;
+            maxHeightInRow = 0;
+        }
+
+        note.x = currentX;
+        note.y = currentY;
+
+        const request = store.put(note);
+        updates.push(new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        }));
+
+        currentX += w + SPACING;
+        maxHeightInRow = Math.max(maxHeightInRow, h);
+    }
+
+    try {
+        await Promise.all(updates);
+        await syncToExternalIfNeeded();
+
+        // Refresh UI
+        workspace.innerHTML = '';
+        notes.forEach(renderNote);
+        showToast('Notes aligned to grid');
+    } catch (err) {
+        console.error('Alignment failed:', err);
+        showToast('Failed to align notes', 'danger');
+    }
+}
+
 // generate unique id
 function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -896,15 +992,19 @@ function renderNote(note) {
         }
         for (const entry of entries) {
             // 外側の幅・高さを取得（padding/borderを含む）
+            // 整数値に丸めることで、微細な端数によるループ保存やリサイズ誤差を防ぐ
             const rect = noteEl.getBoundingClientRect();
-            const width = rect.width;
-            const height = rect.height;
+            const width = Math.round(rect.width);
+            const height = Math.round(rect.height);
             const id = noteEl.dataset.id;
             const idx = notes.findIndex(n => n.id === id);
             if (idx > -1) {
-                notes[idx].width = width;
-                notes[idx].height = height;
-                updateNoteDB(notes[idx]);
+                // 値が実際に変わった場合のみ更新
+                if (notes[idx].width !== width || notes[idx].height !== height) {
+                    notes[idx].width = width;
+                    notes[idx].height = height;
+                    updateNoteDB(notes[idx]);
+                }
             }
         }
     });
@@ -991,9 +1091,9 @@ workspace.addEventListener('dblclick', async (e) => {
     // ノート自体やノート内の要素をクリックした場合は何もしない
     if (e.target !== workspace) return;
 
-    // クリック位置を取得してスナップ
-    const x = snap(e.offsetX);
-    const y = snap(e.offsetY);
+    // クリック位置を取得してスナップ（スクロール分を加算）
+    const x = snap(e.offsetX + workspace.scrollLeft);
+    const y = snap(e.offsetY + workspace.scrollTop);
 
     // 空のメモを作成
     await createNewNote('New Note', x, y);
@@ -1024,8 +1124,24 @@ document.body.appendChild(globalDropZone);
 
 // 画像の貼り付け対応
 document.addEventListener('paste', async e => {
-    // 入力要素（textarea等）や contentEditable 要素でのペーストは無視（編集中のノートなど）
-    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.isContentEditable) return;
+    // contentEditable 要素（ノート内）でのペースト処理
+    if (e.target.isContentEditable) {
+        // 画像が含まれていない（テキストのみの）場合はプレーンテキストとして貼り付ける
+        const items = Array.from(e.clipboardData.items);
+        const hasFile = items.some(item => item.kind === 'file');
+
+        if (!hasFile) {
+            e.preventDefault();
+            const text = e.clipboardData.getData('text/plain');
+            document.execCommand('insertText', false, text);
+            return;
+        }
+        // 画像が含まれる場合はデフォルトの挙動（または特定の処理）に任せるか、必要に応じて制限する
+        return;
+    }
+
+    // 入力要素（textarea等）でのペーストは無視
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
 
     const items = Array.from(e.clipboardData.items);
     for (const item of items) {
@@ -1035,9 +1151,9 @@ document.addEventListener('paste', async e => {
                 const reader = new FileReader();
                 reader.onload = async () => {
                     const dataUrl = reader.result;
-                    // 画面中央付近に配置
-                    const x = snap((window.innerWidth - 200) / 2);
-                    const y = snap((window.innerHeight - 200) / 2);
+                    // 画面中央付近に配置（スクロール分を加算）
+                    const x = snap((window.innerWidth - 200) / 2 + workspace.scrollLeft);
+                    const y = snap((window.innerHeight - 200) / 2 + workspace.scrollTop);
                     const note = {
                         id: generateId(),
                         groupId: currentGroupId,
@@ -1097,9 +1213,9 @@ globalDropZone.addEventListener('drop', async e => {
             const reader = new FileReader();
             reader.onload = async () => {
                 const dataUrl = reader.result;
-                // 画面中央に配置
-                const baseX = (window.innerWidth - 200) / 2;
-                const baseY = (window.innerHeight - 200) / 2;
+                // 画面中央に配置（スクロール分を加算）
+                const baseX = (window.innerWidth - 200) / 2 + workspace.scrollLeft;
+                const baseY = (window.innerHeight - 200) / 2 + workspace.scrollTop;
                 const note = {
                     id: generateId(),
                     groupId: currentGroupId,
@@ -1166,7 +1282,7 @@ if (window.electronAPI && window.electronAPI.onPasteNote) {
             if (window.electronAPI.triggerSystemPaste) {
                 window.electronAPI.triggerSystemPaste();
             }
-        }, 100);
+        }, 500);
     });
 }
 
@@ -1250,7 +1366,7 @@ workspace.addEventListener('mouseleave', () => {
 
 // init
 (async () => {
-    await initStorageMode();
+    await initSettings();
     await syncFromExternalIfNeeded();
     await loadNotes().then(() => {
         // レンダラー側のメモ配列をメインプロセスから参照可能に
@@ -1301,6 +1417,11 @@ workspace.addEventListener('mouseleave', () => {
         });
     }
 
+    const alignBtn = document.getElementById('align-notes');
+    if (alignBtn) {
+        alignBtn.addEventListener('click', alignNotes);
+    }
+
     if (changeStorageBtn) {
         if (!window.electronAPI) {
             changeStorageBtn.disabled = true;
@@ -1333,5 +1454,31 @@ workspace.addEventListener('mouseleave', () => {
     const resetAppBtn = document.getElementById('reset-app-button');
     if (resetAppBtn) {
         resetAppBtn.addEventListener('click', handleResetApp);
+    }
+
+    // 外部ファイルの変更検知ハンドラ
+    let isSyncing = false;
+    if (window.electronAPI && window.electronAPI.onExternalDataChanged) {
+        window.electronAPI.onExternalDataChanged(async () => {
+            if (isSyncing) return;
+            isSyncing = true;
+
+            try {
+                console.log('External data change detected. Syncing...');
+                await syncFromExternalIfNeeded();
+
+                // UIをリフレッシュ
+                workspace.innerHTML = '';
+                notes = [];
+                await loadNotes();
+
+                showToast('Sync updated from external storage');
+            } finally {
+                // 短時間に連続して発生するのを防ぐため、少し待ってからロック解除
+                setTimeout(() => {
+                    isSyncing = false;
+                }, 1000);
+            }
+        });
     }
 })();

@@ -241,6 +241,22 @@ body {
     position: relative;
     cursor: crosshair;
     z-index: 1;
+    overflow: auto;
+    /* Added to allow scrolling for large notes */
+}
+
+/* Ensure whitespace at the bottom/right for new note creation */
+#workspace::after {
+    content: '';
+    display: block;
+    position: absolute;
+    width: 2000px;
+    /* Arbitrary large size to allow scrolling beyond notes */
+    height: 2000px;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: -1;
 }
 
 /* キャンバス上の操作ヒント */

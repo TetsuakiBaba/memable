@@ -9,9 +9,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // New Storage APIs
     selectDirectory: () => ipcRenderer.invoke('select-directory'),
     getStorageConfig: () => ipcRenderer.invoke('get-config'),
+    toggleShortcuts: (enabled) => ipcRenderer.invoke('toggle-shortcuts', enabled),
     saveExternalData: (filename, data) => ipcRenderer.invoke('save-external-data', filename, data),
     loadExternalData: (filename) => ipcRenderer.invoke('load-external-data', filename),
     exportToJson: (data) => ipcRenderer.invoke('export-to-json', data),
     resetConfig: () => ipcRenderer.invoke('reset-config'),
-    triggerSystemPaste: () => ipcRenderer.send('trigger-system-paste')
+    triggerSystemPaste: () => ipcRenderer.send('trigger-system-paste'),
+    onExternalDataChanged: (callback) => ipcRenderer.on('external-data-changed', callback)
 });

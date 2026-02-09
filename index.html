@@ -33,6 +33,9 @@
                 <span class="material-symbols-outlined">grid_4x4</span>
                 <span class="btn-text">Grid: OFF</span>
             </button>
+            <button id="align-notes" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Align Notes">
+                <span class="material-symbols-outlined">grid_view</span>
+            </button>
             <button id="settings-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Settings">
                 <span class="material-symbols-outlined">settings</span>
             </button>
@@ -80,6 +83,20 @@
                             <input class="form-check-input" type="checkbox" id="themeToggle">
                             <label class="form-check-label" for="themeToggle">Dark Mode</label>
                         </div>
+                    </section>
+                    <hr>
+                    <section class="mb-4">
+                        <h6>Shortcuts (Electron Only)</h6>
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="shortcut-toggle-switch">
+                            <label class="form-check-label" for="shortcut-toggle-switch">Global Shortcuts</label>
+                        </div>
+                        <ul class="small text-muted ps-3 mb-0">
+                            <li>Quick Paste: <code>Cmd/Ctrl + Alt + [1-0/a-z]</code></li>
+                        </ul>
+                        <p class="small text-muted mt-1" style="font-size: 0.75rem;">
+                            (Copies the note content to clipboard and triggers system paste automatically)
+                        </p>
                     </section>
                     <hr>
                     <section class="mb-4">
@@ -168,14 +185,14 @@
                     </ul>
                     <hr>
                     <h6>Keyboard Shortcuts (Map to IDs)</h6>
-                    <p class="small text-muted">Web Browser & Desktop App:</p>
+                    <p class="small text-muted">Web Browser & Desktop App (Internal):</p>
                     <ul>
-                        <li><strong>[0-9], [a-z]</strong>: Copy note content (when not typing)</li>
+                        <li><strong>[1-0], [a-z]</strong>: Copy note content to clipboard</li>
                     </ul>
                     <p class="small text-muted">Desktop App Only (Global):</p>
                     <ul>
-                        <li><strong>Cmd/Ctrl + [0-9]</strong>: Copy content even in background</li>
-                        <li><strong>Cmd/Ctrl + Opt/Alt + [0-9]</strong>: Paste content to cursor position</li>
+                        <li><strong>Cmd/Ctrl + Opt/Alt + [1-0/a-z]</strong>: Quick Paste (Copy & automatically paste to
+                            active cursor)</li>
                     </ul>
                     <hr>
                     <h6>Group Management</h6>
