@@ -1,6 +1,6 @@
 {
     "name": "memable",
-    "version": "1.3.5",
+    "version": "1.3.6",
     "description": "A temporary copy & paste memo management app.",
     "repository": "https://github.com/TetsuakiBaba/memable",
     "main": "main.js",
