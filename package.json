@@ -1,6 +1,8 @@
 {
     "name": "memable",
-    "version": "1.3.2",
+    "version": "1.3.3",
+    "description": "A temporary copy & paste memo management app.",
+    "repository": "https://github.com/TetsuakiBaba/memable",
     "main": "main.js",
     "scripts": {
         "start": "electron-forge start",

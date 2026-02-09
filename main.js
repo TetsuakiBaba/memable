@@ -3,7 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
 
-require('update-electron-app')();
+const { updateElectronApp } = require('update-electron-app');
+updateElectronApp();
 
 let mainWindow;
 
