@@ -55,6 +55,42 @@ async function syncToExternalIfNeeded() {
     }
 }
 
+// 起動時に外部ストレージからデータを読み込む
+async function syncFromExternalIfNeeded() {
+    if (storageMode === 'external' && window.electronAPI) {
+        const extNotes = await window.electronAPI.loadExternalData('notes.json');
+        const extGroups = await window.electronAPI.loadExternalData('groups.json');
+
+        if (extNotes || extGroups) {
+            const db = await dbPromise;
+            const tx = db.transaction(['notes', 'groups'], 'readwrite');
+            
+            if (extNotes) {
+                const noteStore = tx.objectStore('notes');
+                noteStore.clear();
+                for (const note of extNotes) {
+                    noteStore.put(note);
+                }
+            }
+            
+            if (extGroups) {
+                const groupStore = tx.objectStore('groups');
+                groupStore.clear();
+                for (const group of extGroups) {
+                    groupStore.put(group);
+                }
+            }
+
+            return new Promise((resolve) => {
+                tx.oncomplete = () => {
+                    console.log('Synced from external storage');
+                    resolve();
+                };
+            });
+        }
+    }
+}
+
 // 全ノート取得用（IndexedDBから）
 async function getAllNotesDB_Full() {
     const db = await dbPromise;
@@ -1215,6 +1251,7 @@ workspace.addEventListener('mouseleave', () => {
 // init
 (async () => {
     await initStorageMode();
+    await syncFromExternalIfNeeded();
     await loadNotes().then(() => {
         // レンダラー側のメモ配列をメインプロセスから参照可能に
         window.getNotes = () => notes;
