@@ -9,7 +9,7 @@
     --m3-outline: #79747e;
     --m3-error: #b3261e;
     --m3-on-error: #ffffff;
-    --m3-elevation-1: 0 1px 3px 1px rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+    --m3-elevation-1: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 1px 3px 1px rgba(0, 0, 0, 0.1);
     --m3-elevation-2: 0 2px 6px 2px rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
 }
 
@@ -35,8 +35,13 @@ body {
 
 .m3-surface {
     background-color: var(--m3-surface-container) !important;
-    border-bottom: 1px solid var(--m3-outline);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
     box-shadow: var(--m3-elevation-1);
+}
+
+.navbar {
+    position: relative;
+    z-index: 1000;
 }
 
 .navbar-brand {
@@ -52,11 +57,10 @@ body {
     /* M3 uses slightly less rounded for some buttons but 100px for fab. 12-16px is good for these. */
     padding: 8px 16px !important;
     display: inline-flex;
-    flex-direction: column;
-    /* Stack icons for save button */
+    flex-direction: row;
     align-items: center;
     justify-content: center;
-    gap: 4px;
+    gap: 8px;
     border: none;
     transition: all 0.2s;
     font-weight: 500;
@@ -122,12 +126,121 @@ body {
     box-shadow: none !important;
 }
 
-#workspace {
-    width: 100%;
+#main-layout {
     height: calc(100vh - 60px);
-    /* Adjust based on navbar height */
+    overflow: hidden;
+    position: relative;
+    z-index: 1;
+}
+
+#sidebar {
+    width: 200px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid rgba(0, 0, 0, 0.05);
+    background-color: var(--m3-surface-container) !important;
+    transition: width 0.3s, padding 0.3s;
+    flex-shrink: 0;
+    overflow: hidden;
+    position: relative;
+    z-index: 10;
+}
+
+#sidebar.collapsed {
+    width: 60px;
+}
+
+#sidebar.collapsed .sidebar-title,
+#sidebar.collapsed .group-name,
+#sidebar.collapsed .group-actions,
+#sidebar.collapsed #add-group-button {
+    display: none !important;
+}
+
+#sidebar.collapsed .sidebar-header {
+    justify-content: center !important;
+    padding: 12px 0 !important;
+}
+
+#sidebar.collapsed .group-item {
+    justify-content: center;
+    padding: 8px 0;
+}
+
+#sidebar.collapsed .group-item::before {
+    content: '•';
+    font-size: 1.2rem;
+}
+
+#sidebar.collapsed .group-item.active::before {
+    color: var(--m3-on-primary);
+}
+
+#group-list {
+    scrollbar-width: thin;
+}
+
+.group-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    user-select: none;
+    font-size: 0.9rem;
+    gap: 8px;
+}
+
+.group-item:hover {
+    background-color: var(--m3-secondary-container);
+}
+
+.group-item.active {
+    background-color: var(--m3-primary);
+    color: var(--m3-on-primary);
+}
+
+.group-name {
+    flex-grow: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.group-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.group-item:hover .group-actions {
+    opacity: 1;
+}
+
+.group-action-btn {
+    padding: 2px;
+    background: none;
+    border: none;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+}
+
+.group-action-btn:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+#workspace {
+    flex-grow: 1;
+    height: 100%;
     position: relative;
     cursor: crosshair;
+    z-index: 1;
 }
 
 /* キャンバス上の操作ヒント */
@@ -142,7 +255,7 @@ body {
     box-shadow: var(--m3-elevation-2);
     opacity: 0;
     transition: opacity 0.2s;
-    z-index: 9999;
+    z-index: 5000;
     white-space: nowrap;
     border: 1px solid var(--m3-outline);
 }
@@ -344,6 +457,15 @@ body {
 
 .header-actions .btn:hover {
     background-color: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Modals should always be on top of notes */
+.modal {
+    z-index: 10000 !important;
+}
+
+.modal-backdrop {
+    z-index: 9999 !important;
 }
 
 /* Badge update */

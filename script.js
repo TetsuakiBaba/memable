@@ -1,8 +1,73 @@
 // state
 let notes = [];
+let groups = [];
+let currentGroupId = localStorage.getItem('currentGroupId') || 'default';
+let storageMode = 'indexeddb'; // 'indexeddb' or 'external'
+let externalPath = null;
 const storageKey = 'memableNotes';
 
+// --- Undo Logic ---
+let lastDeletedNote = null;
+
 const workspace = document.getElementById('workspace');
+const groupList = document.getElementById('group-list');
+const addGroupButton = document.getElementById('add-group-button');
+
+// --- Storage Switch Logic ---
+async function initStorageMode() {
+    if (window.electronAPI) {
+        const config = await window.electronAPI.getStorageConfig();
+        if (config && config.externalPath) {
+            storageMode = 'external';
+            externalPath = config.externalPath;
+            updateSettingsUI();
+            return;
+        }
+    }
+    storageMode = 'indexeddb';
+    updateSettingsUI();
+}
+
+function updateSettingsUI() {
+    const pathDisplay = document.getElementById('storage-path-display');
+    const statusBox = document.getElementById('storage-status');
+    if (pathDisplay) {
+        pathDisplay.value = externalPath || 'IndexedDB (Standard)';
+    }
+    if (statusBox) {
+        if (storageMode === 'external') {
+            statusBox.classList.remove('d-none');
+            statusBox.textContent = `External sync active at ${externalPath}`;
+        } else {
+            statusBox.classList.add('d-none');
+        }
+    }
+}
+
+// データ保存時に外部ストレージが有効なら書き込む
+async function syncToExternalIfNeeded() {
+    if (storageMode === 'external' && window.electronAPI) {
+        // すべてのメモとグループを取得して保存
+        const allNotes = await getAllNotesDB_Full();
+        const allGroups = await getAllGroupsDB();
+        await window.electronAPI.saveExternalData('notes.json', allNotes);
+        await window.electronAPI.saveExternalData('groups.json', allGroups);
+    }
+}
+
+// 全ノート取得用（IndexedDBから）
+async function getAllNotesDB_Full() {
+    const db = await dbPromise;
+    const tx = db.transaction('notes', 'readonly');
+    const store = tx.objectStore('notes');
+    return new Promise((res, rej) => {
+        const r = store.getAll();
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+    });
+}
+
+
 // load grid snap state from localStorage
 const savedGridSnap = localStorage.getItem('gridSnapEnabled');
 let isGridSnap = savedGridSnap === 'true';
@@ -10,7 +75,7 @@ const gridToggle = document.getElementById('grid-toggle');
 const clearAllButton = document.getElementById('clear-all-button');
 
 // z-index 管理用
-let maxZIndex = 1000;
+let maxZIndex = 100;
 
 // ボタン表示更新関数
 function updateGridToggleButton() {
@@ -47,54 +112,195 @@ let defaultNoteColor = localStorage.getItem('defaultNoteColor') || 'yellow';
 
 // IndexedDB 初期化
 const dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open('memable-db', 1);
-    req.onupgradeneeded = () => {
+    const req = indexedDB.open('memable-db', 2);
+    req.onupgradeneeded = (event) => {
         const db = req.result;
-        if (!db.objectStoreNames.contains('notes')) db.createObjectStore('notes', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('notes')) {
+            db.createObjectStore('notes', { keyPath: 'id' });
+        }
+        if (event.oldVersion < 2) {
+            // Version 2: Add groups store and groupId to notes
+            if (!db.objectStoreNames.contains('groups')) {
+                db.createObjectStore('groups', { keyPath: 'id' });
+            }
+            const noteStore = req.transaction.objectStore('notes');
+            if (!noteStore.indexNames.contains('groupId')) {
+                noteStore.createIndex('groupId', 'groupId', { unique: false });
+            }
+        }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
 });
 
-async function getAllNotesDB() {
+async function getAllNotesDB(groupId) {
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readonly');
     const store = tx.objectStore('notes');
+    const index = store.index('groupId');
+    return new Promise((res, rej) => {
+        const r = index.getAll(groupId);
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+    });
+}
+
+// 既存のメモを移行するための関数（全件取得）
+async function migrateLegacyNotes() {
+    const db = await dbPromise;
+    const tx = db.transaction(['notes', 'groups'], 'readwrite');
+    const noteStore = tx.objectStore('notes');
+    const groupStore = tx.objectStore('groups');
+
+    // デフォルトグループの作成
+    const defaultGroup = { id: 'default', name: 'Default' };
+    const groupReq = groupStore.get('default');
+
+    groupReq.onsuccess = () => {
+        if (!groupReq.result) {
+            groupStore.add(defaultGroup);
+        }
+    };
+
+    const notesReq = noteStore.getAll();
+    notesReq.onsuccess = () => {
+        const allNotes = notesReq.result;
+        allNotes.forEach(note => {
+            if (!note.groupId) {
+                note.groupId = 'default';
+                noteStore.put(note);
+            }
+        });
+    };
+}
+
+async function getAllGroupsDB() {
+    const db = await dbPromise;
+    const tx = db.transaction('groups', 'readonly');
+    const store = tx.objectStore('groups');
     return new Promise((res, rej) => {
         const r = store.getAll();
         r.onsuccess = () => res(r.result);
         r.onerror = () => rej(r.error);
     });
 }
+
+async function addGroupDB(group) {
+    const db = await dbPromise;
+    const tx = db.transaction('groups', 'readwrite');
+    tx.objectStore('groups').add(group);
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
+}
+
+async function updateGroupDB(group) {
+    const db = await dbPromise;
+    const tx = db.transaction('groups', 'readwrite');
+    tx.objectStore('groups').put(group);
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
+}
+
+async function deleteGroupDB(id) {
+    const db = await dbPromise;
+    const tx = db.transaction(['notes', 'groups'], 'readwrite');
+    const noteStore = tx.objectStore('notes');
+    const groupStore = tx.objectStore('groups');
+
+    // そのグループのノートをすべて削除
+    const index = noteStore.index('groupId');
+    const cursorReq = index.openCursor(id);
+    cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+            cursor.delete();
+            cursor.continue();
+        }
+    };
+
+    groupStore.delete(id);
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
+}
+
 async function addNoteDB(note) {
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
     tx.objectStore('notes').add(note);
-    return tx.complete;
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
 }
 async function updateNoteDB(note) {
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
     tx.objectStore('notes').put(note);
-    return tx.complete;
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
 }
 async function deleteNoteDB(id) {
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
     tx.objectStore('notes').delete(id);
-    return tx.complete;
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
 }
-async function clearAllNotesDB() {
+async function clearAllNotesDB(groupId) {
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
-    tx.objectStore('notes').clear();
-    return tx.complete;
+    const store = tx.objectStore('notes');
+    const index = store.index('groupId');
+    const cursorReq = index.openCursor(groupId);
+    cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+            cursor.delete();
+            cursor.continue();
+        }
+    };
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
 }
 
-// 数値をキーIDに変換
+// 数値をキーIDに変換 (1-9, 0, a-z)
 function numToKeyId(num) {
     if (num <= 9) return String(num);
-    const code = 'a'.charCodeAt(0) + (num - 10);
+    if (num === 10) return '0';
+    const code = 'a'.charCodeAt(0) + (num - 11);
     return String.fromCharCode(code);
 }
 
@@ -116,9 +322,203 @@ async function assignNoteIds() {
     }
 }
 
+// --- Export / Import ---
+async function handleExport() {
+    const allNotes = await getAllNotesDB_Full();
+    const allGroups = await getAllGroupsDB();
+    const data = { notes: allNotes, groups: allGroups, version: '1.2.0', source: 'memable' };
+
+    if (window.electronAPI) {
+        const success = await window.electronAPI.exportToJson(data);
+        if (success) showToast('Export successful!');
+    } else {
+        // Browser download
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `memable_backup_${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+}
+
+async function handleImport(file) {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (!data.notes || !data.groups) throw new Error('Invalid data format');
+
+            if (confirm('Importing will clear current data. Continue?')) {
+                const db = await dbPromise;
+                const tx = db.transaction(['notes', 'groups'], 'readwrite');
+                tx.objectStore('notes').clear();
+                tx.objectStore('groups').clear();
+
+                for (const g of data.groups) tx.objectStore('groups').add(g);
+                for (const n of data.notes) tx.objectStore('notes').add(n);
+
+                tx.oncomplete = () => {
+                    alert('Import successful! Reloading...');
+                    location.reload();
+                };
+                tx.onerror = () => alert('Import failed: ' + tx.error);
+            }
+        } catch (err) {
+            alert('Failed to import: ' + err.message);
+        }
+    };
+    reader.readAsText(file);
+}
+
+async function handleResetApp() {
+    if (confirm('Are you sure you want to reset EVERYTHING? This will delete all notes, groups, and settings. This cannot be undone.')) {
+        // 1. Clear IndexedDB
+        const db = await dbPromise;
+        const tx = db.transaction(['notes', 'groups'], 'readwrite');
+        tx.objectStore('notes').clear();
+        tx.objectStore('groups').clear();
+
+        tx.oncomplete = async () => {
+            // 2. Clear localStorage
+            localStorage.clear();
+
+            // 3. Reset Electron Config
+            if (window.electronAPI && window.electronAPI.resetConfig) {
+                await window.electronAPI.resetConfig();
+            }
+
+            alert('App has been reset. Reloading...');
+            location.reload();
+        };
+    }
+}
+
+function showToast(message) {
+    // Simple feedback logic (can be extended)
+    console.log(message);
+    const feedback = document.createElement('div');
+    feedback.className = 'copy-feedback visible';
+    feedback.textContent = message;
+    document.body.appendChild(feedback);
+    setTimeout(() => {
+        feedback.classList.remove('visible');
+        setTimeout(() => feedback.remove(), 300);
+    }, 2000);
+}
+
+// --- Group Management Functions ---
+
+let groupModalInstance = null;
+
+async function loadGroups() {
+    groups = await getAllGroupsDB();
+    if (groups.length === 0) {
+        const defaultGroup = { id: 'default', name: 'Default' };
+        await addGroupDB(defaultGroup);
+        groups = [defaultGroup];
+    }
+    renderGroups();
+}
+
+function renderGroups() {
+    groupList.innerHTML = '';
+    groups.forEach(group => {
+        const groupEl = document.createElement('div');
+        groupEl.className = `group-item ${group.id === currentGroupId ? 'active' : ''}`;
+        groupEl.dataset.id = group.id;
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'group-name';
+        nameEl.textContent = group.name;
+        nameEl.title = 'Double click to rename';
+
+        const actionsEl = document.createElement('div');
+        actionsEl.className = 'group-actions';
+
+        if (group.id !== 'default') {
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'group-action-btn material-symbols-outlined';
+            deleteBtn.textContent = 'delete';
+            deleteBtn.title = 'Delete group and its notes';
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (confirm(`Delete group "${group.name}" and all its notes?`)) {
+                    deleteGroup(group.id);
+                }
+            });
+            actionsEl.appendChild(deleteBtn);
+        }
+
+        groupEl.appendChild(nameEl);
+        groupEl.appendChild(actionsEl);
+
+        groupEl.addEventListener('click', () => switchGroup(group.id));
+
+        groupEl.addEventListener('dblclick', async (e) => {
+            e.stopPropagation();
+            const newName = await showGroupModal('Rename Group', group.name);
+            if (newName && newName !== group.name) {
+                renameGroup(group.id, newName);
+            }
+        });
+
+        groupList.appendChild(groupEl);
+    });
+}
+
+async function switchGroup(groupId) {
+    if (currentGroupId === groupId) return;
+    currentGroupId = groupId;
+    localStorage.setItem('currentGroupId', currentGroupId);
+
+    renderGroups();
+
+    workspace.innerHTML = '';
+    notes = [];
+    await loadNotes();
+}
+
+async function createNewGroup() {
+    const name = await showGroupModal('New Group');
+    if (!name) return;
+    const id = generateId();
+    const newGroup = { id, name };
+    await addGroupDB(newGroup);
+    groups.push(newGroup);
+    renderGroups();
+    switchGroup(id);
+}
+
+async function renameGroup(id, newName) {
+    const group = groups.find(g => g.id === id);
+    if (group) {
+        group.name = newName;
+        await updateGroupDB(group);
+        renderGroups();
+    }
+}
+
+async function deleteGroup(id) {
+    await deleteGroupDB(id);
+    groups = groups.filter(g => g.id !== id);
+    if (currentGroupId === id) {
+        await switchGroup('default');
+    } else {
+        renderGroups();
+    }
+}
+
+if (addGroupButton) {
+    addGroupButton.addEventListener('click', createNewGroup);
+}
+
 // load notes from IndexedDB
 async function loadNotes() {
-    notes = await getAllNotesDB();
+    await migrateLegacyNotes();
+    await loadGroups();
+    notes = await getAllNotesDB(currentGroupId);
     notes.forEach(renderNote);
     updateNoteCount();
     await assignNoteIds();
@@ -366,6 +766,7 @@ function renderNote(note) {
         offsetX = e.clientX - noteEl.offsetLeft;
         offsetY = e.clientY - noteEl.offsetTop;
     });
+
     document.addEventListener('mousemove', e => {
         if (!isDragging) return;
         const rawX = e.clientX - offsetX;
@@ -373,10 +774,12 @@ function renderNote(note) {
         noteEl.style.left = snap(rawX) + 'px';
         noteEl.style.top = snap(rawY) + 'px';
     });
+
     document.addEventListener('mouseup', async e => {
         if (isDragging) {
             isDragging = false;
-            // update position
+
+            // 通常の移動として位置を保存
             const id = noteEl.dataset.id;
             const idx = notes.findIndex(n => n.id === id);
             if (idx > -1) {
@@ -419,11 +822,16 @@ function renderNote(note) {
 
     // delete
     deleteBtn.addEventListener('click', async () => {
+        // 保存（1つ分のみ）
+        lastDeletedNote = { ...note };
+
         workspace.removeChild(noteEl);
         notes = notes.filter(n => n.id !== note.id);
         await deleteNoteDB(note.id);
         updateNoteCount();
         await assignNoteIds();
+
+        showToast('Note deleted. Press Ctrl+Z to undo.');
     });
 
     // edit logic
@@ -466,6 +874,7 @@ function renderNote(note) {
 async function createNewNote(text, x = snap(10), y = snap(10)) {
     const note = {
         id: generateId(),
+        groupId: currentGroupId,
         type: 'text',
         content: text,
         x: x,
@@ -520,8 +929,8 @@ document.body.appendChild(globalDropZone);
 
 // 画像の貼り付け対応
 document.addEventListener('paste', async e => {
-    // 入力要素（textarea等）でのペーストは無視（編集中のノートなど）
-    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    // 入力要素（textarea等）や contentEditable 要素でのペーストは無視（編集中のノートなど）
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.isContentEditable) return;
 
     const items = Array.from(e.clipboardData.items);
     for (const item of items) {
@@ -536,6 +945,7 @@ document.addEventListener('paste', async e => {
                     const y = snap((window.innerHeight - 200) / 2);
                     const note = {
                         id: generateId(),
+                        groupId: currentGroupId,
                         type: 'image',
                         content: dataUrl,
                         x: x,
@@ -595,7 +1005,18 @@ globalDropZone.addEventListener('drop', async e => {
                 // 画面中央に配置
                 const baseX = (window.innerWidth - 200) / 2;
                 const baseY = (window.innerHeight - 200) / 2;
-                const note = { id: generateId(), type: 'image', content: dataUrl, x: snap(baseX), y: snap(baseY), width: 200, height: 200, color: defaultNoteColor };
+                const note = {
+                    id: generateId(),
+                    groupId: currentGroupId,
+                    type: 'image',
+                    content: dataUrl,
+                    x: snap(baseX),
+                    y: snap(baseY),
+                    width: 200,
+                    height: 200,
+                    color: defaultNoteColor,
+                    zIndex: maxZIndex++
+                };
                 await addNoteDB(note);
                 notes.push(note);
                 renderNote(note);
@@ -609,8 +1030,8 @@ globalDropZone.addEventListener('drop', async e => {
 
 // clear all
 clearAllButton.addEventListener('click', async () => {
-    if (confirm('Are you sure you want to delete all notes?')) {
-        await clearAllNotesDB();
+    if (confirm('Are you sure you want to delete all notes in this group?')) {
+        await clearAllNotesDB(currentGroupId);
         notes = [];
         workspace.innerHTML = '';
         updateNoteCount();
@@ -641,21 +1062,16 @@ if (window.electronAPI && window.electronAPI.onPasteNote) {
         const note = notes.find(n => n.keyId === key);
         if (!note) return;
 
-        // 共通のコピー処理を実行（アイコン・通知フィードバック含む）
-        await handleCopy(note);
+        // 背景動作時でも確実にクリップボードへ送るためにメインプロセス経由でコピー
+        window.electronAPI.sendDeliverNote(key, note.type, note.content);
+        showIconFeedback(note);
 
-        // フォーカス中の要素に直接貼り付け
-        const active = document.activeElement;
-        if (note.type === 'text' && active && (active.tagName === 'TEXTAREA' || (active.tagName === 'INPUT' && /text|search|url|tel|password/.test(active.type)))) {
-            const start = active.selectionStart;
-            const end = active.selectionEnd;
-            const val = active.value;
-            active.value = val.slice(0, start) + note.content + val.slice(end);
-            active.selectionStart = active.selectionEnd = start + note.content.length;
-            active.focus();
-        } else {
-            document.execCommand('paste');
-        }
+        // クリップボードが更新されるのを待ってからシステムレベルのペーストを実行 (500ms 余裕を設ける)
+        setTimeout(() => {
+            if (window.electronAPI.triggerSystemPaste) {
+                window.electronAPI.triggerSystemPaste();
+            }
+        }, 100);
     });
 }
 
@@ -688,9 +1104,26 @@ window.addEventListener('keydown', async (e) => {
     }
 
     // 修飾キー（Ctrl, Cmd, Alt, Shift）が押されている場合はブラウザ標準機能を優先
-    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' || (e.key === 'Z' && e.shiftKey)) {
+            // Undo delete
+            if (lastDeletedNote) {
+                e.preventDefault();
+                const restoredNote = { ...lastDeletedNote };
+                lastDeletedNote = null; // Clear to prevent double undo
 
-    const key = e.key.toLowerCase();
+                await addNoteDB(restoredNote);
+                notes.push(restoredNote);
+                renderNote(restoredNote);
+                updateNoteCount();
+                await assignNoteIds();
+                showToast('Note restored!');
+            }
+        }
+        return;
+    }
+
+    if (e.altKey || e.shiftKey) return;
     const note = notes.find(n => n.keyId === key);
     if (note) {
         e.preventDefault();
@@ -708,8 +1141,8 @@ workspace.addEventListener('mousemove', (e) => {
     // ワークスペース自体（またはそこにあるドロップゾーン）の上でのみヒントを表示
     if (e.target === workspace || e.target.id === 'global-drop-zone') {
         canvasHint.classList.add('visible');
-        canvasHint.style.left = (e.clientX + 15) + 'px';
-        canvasHint.style.top = (e.clientY + 15) + 'px';
+        canvasHint.style.left = (e.clientX + 8) + 'px';
+        canvasHint.style.top = (e.clientY + 8) + 'px';
     } else {
         canvasHint.classList.remove('visible');
     }
@@ -720,7 +1153,88 @@ workspace.addEventListener('mouseleave', () => {
 });
 
 // init
-loadNotes().then(() => {
-    // レンダラー側のメモ配列をメインプロセスから参照可能に
-    window.getNotes = () => notes;
-});
+(async () => {
+    await initStorageMode();
+    await loadNotes().then(() => {
+        // レンダラー側のメモ配列をメインプロセスから参照可能に
+        window.getNotes = () => notes;
+    });
+
+    // UI events for settings
+    const settingsBtn = document.getElementById('settings-button');
+    const helpBtn = document.getElementById('help-button');
+    const changeStorageBtn = document.getElementById('change-storage-button');
+    const exportBtn = document.getElementById('export-button');
+    const importInput = document.getElementById('import-input');
+    const toggleSidebarBtn = document.getElementById('toggle-sidebar-button');
+    const sidebar = document.getElementById('sidebar');
+
+    // Restore sidebar state
+    if (localStorage.getItem('sidebarCollapsed') === 'true') {
+        sidebar.classList.add('collapsed');
+        if (toggleSidebarBtn) {
+            toggleSidebarBtn.querySelector('.material-symbols-outlined').textContent = 'menu';
+        }
+    }
+
+    if (toggleSidebarBtn && sidebar) {
+        toggleSidebarBtn.addEventListener('click', () => {
+            const isCollapsed = sidebar.classList.toggle('collapsed');
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
+
+            // Toggle icon
+            const iconSpan = toggleSidebarBtn.querySelector('.material-symbols-outlined');
+            if (iconSpan) {
+                iconSpan.textContent = isCollapsed ? 'menu' : 'menu_open';
+            }
+        });
+    }
+
+    if (helpBtn) {
+        helpBtn.addEventListener('click', () => {
+            const modal = new bootstrap.Modal(document.getElementById('helpModal'));
+            modal.show();
+        });
+    }
+
+    if (settingsBtn) {
+        settingsBtn.addEventListener('click', () => {
+            const modal = new bootstrap.Modal(document.getElementById('settingsModal'));
+            modal.show();
+        });
+    }
+
+    if (changeStorageBtn) {
+        if (!window.electronAPI) {
+            changeStorageBtn.disabled = true;
+            changeStorageBtn.title = "Not available in browser";
+        } else {
+            changeStorageBtn.addEventListener('click', async () => {
+                const path = await window.electronAPI.selectDirectory();
+                if (path) {
+                    externalPath = path;
+                    storageMode = 'external';
+                    updateSettingsUI();
+                    await syncToExternalIfNeeded();
+                }
+            });
+        }
+    }
+
+    if (exportBtn) {
+        exportBtn.addEventListener('click', handleExport);
+    }
+
+    if (importInput) {
+        importInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleImport(e.target.files[0]);
+            }
+        });
+    }
+
+    const resetAppBtn = document.getElementById('reset-app-button');
+    if (resetAppBtn) {
+        resetAppBtn.addEventListener('click', handleResetApp);
+    }
+})();

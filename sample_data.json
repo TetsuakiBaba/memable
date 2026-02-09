@@ -1,0 +1,68 @@
+{
+    "notes": [
+        {
+            "id": "sample-1",
+            "groupId": "default",
+            "type": "text",
+            "content": "Welcome to Memable!\n\nThis is a simple sticky note app.\nDouble-click anywhere to create a new note.",
+            "x": 50,
+            "y": 50,
+            "width": 250,
+            "height": 180,
+            "color": "yellow",
+            "zIndex": 100,
+            "keyId": "1"
+        },
+        {
+            "id": "sample-2",
+            "groupId": "default",
+            "type": "text",
+            "content": "💡 Tips:\n- Use Cmd+1..9 to copy notes\n- Use Cmd+Opt+1..9 to paste elsewhere (Desktop app)\n- Drag notes to organize",
+            "x": 325,
+            "y": 50,
+            "width": 250,
+            "height": 180,
+            "color": "blue",
+            "zIndex": 101,
+            "keyId": "2"
+        },
+        {
+            "id": "sample-3",
+            "groupId": "default",
+            "type": "text",
+            "content": "🎨 Customization:\nChange colors from the top-right icons on each note.\n\nYou can also export/import your data via Settings.",
+            "x": 50,
+            "y": 250,
+            "width": 250,
+            "height": 180,
+            "color": "green",
+            "zIndex": 102,
+            "keyId": "3"
+        },
+        {
+            "id": "sample-4",
+            "groupId": "meeting-group",
+            "type": "text",
+            "content": "This note is in a different Workspace!\n\nUse the sidebar to switch between different project contexts.",
+            "x": 100,
+            "y": 100,
+            "width": 250,
+            "height": 150,
+            "color": "pink",
+            "zIndex": 103,
+            "keyId": "4"
+        }
+    ],
+    "groups": [
+        {
+            "id": "default",
+            "name": "Default"
+        },
+        {
+            "id": "meeting-group",
+            "name": "Meeting Sample"
+        }
+    ],
+    "version": "1.2.0",
+    "source": "memable"
+}

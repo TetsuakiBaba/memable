@@ -26,27 +26,174 @@
         <div class="container-fluid">
             <a class="navbar-brand d-flex align-items-center" href="#">
                 <img src="icons/icon-192.png" alt="icon" width="24" height="24" class="me-2">
-                memable <small id="appVersion" class="text-muted ms-1"></small>
+                memable
             </a>
-            <div class="form-check form-switch ms-auto">
-                <input class="form-check-input" type="checkbox" id="themeToggle">
-                <label class="form-check-label me-3" for="themeToggle">Dark Mode</label>
-            </div>
-            <button id="grid-toggle" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Grid Snap">
+
+            <button id="grid-toggle" class="btn m3-button-tonal py-1 px-3 me-2 ms-auto" type="button" title="Grid Snap">
                 <span class="material-symbols-outlined">grid_4x4</span>
                 <span class="btn-text">Grid: OFF</span>
+            </button>
+            <button id="settings-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Settings">
+                <span class="material-symbols-outlined">settings</span>
+            </button>
+            <button id="help-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Help">
+                <span class="material-symbols-outlined">help</span>
             </button>
             <button id="clear-all-button" class="btn m3-button-danger py-1 px-3 me-3" type="button" title="Clear All">
                 <span class="material-symbols-outlined">delete_sweep</span>
                 <span id="number_of_memo"></span>
             </button>
-            <a href="https://github.com/TetsuakiBaba/memable" class="text-secondary" target="_blank" rel="noopener"
-                title="GitHub">
-                <span class="material-symbols-outlined fs-3">terminal</span>
-            </a>
         </div>
     </nav>
-    <div id="workspace" class="position-relative"></div>
+    <div id="main-layout" class="d-flex w-100">
+        <aside id="sidebar" class="m3-surface">
+            <div class="sidebar-header p-3 border-bottom d-flex align-items-center justify-content-between">
+                <h6 class="mb-0 sidebar-title">Groups</h6>
+                <div class="d-flex gap-1">
+                    <button id="add-group-button" class="btn btn-sm m3-button-tonal p-1" title="New Group">
+                        <span class="material-symbols-outlined">add</span>
+                    </button>
+                    <button id="toggle-sidebar-button" class="btn btn-sm m3-button-tonal p-1" title="Toggle Sidebar">
+                        <span class="material-symbols-outlined">menu_open</span>
+                    </button>
+                </div>
+            </div>
+            <div id="group-list" class="flex-grow-1 overflow-auto py-2">
+                <!-- Groups will be rendered here -->
+            </div>
+        </aside>
+        <div id="workspace" class="position-relative flex-grow-1"></div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content m3-surface text-body">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title">Settings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <section class="mb-4">
+                        <h6>Appearance</h6>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="themeToggle">
+                            <label class="form-check-label" for="themeToggle">Dark Mode</label>
+                        </div>
+                    </section>
+                    <hr>
+                    <section class="mb-4">
+                        <h6>Storage (Electron Only)</h6>
+                        <p class="small text-muted mb-2">Sync with external folder (Dropbox, etc.)</p>
+                        <div class="d-flex align-items-center gap-2 mb-2">
+                            <input type="text" id="storage-path-display" class="form-control form-control-sm" readonly
+                                placeholder="IndexedDB (Standard)">
+                            <button id="change-storage-button" class="btn btn-sm m3-button-tonal">Change</button>
+                        </div>
+                        <div id="storage-status" class="alert alert-info py-1 px-2 small d-none">External sync active
+                        </div>
+                    </section>
+                    <hr>
+                    <section class="mb-2">
+                        <h6>Data Backup</h6>
+                        <div class="d-grid gap-2 d-md-block">
+                            <button id="export-button" class="btn btn-sm m3-button-primary me-2">
+                                <span class="material-symbols-outlined align-middle fs-6">download</span> Export JSON
+                            </button>
+                            <label for="import-input" class="btn btn-sm m3-button-tonal mb-0">
+                                <span class="material-symbols-outlined align-middle fs-6">upload</span> Import JSON
+                            </label>
+                            <input type="file" id="import-input" class="d-none" accept=".json">
+                        </div>
+                    </section>
+                    <hr>
+                    <section class="mb-2">
+                        <h6>Initialization</h6>
+                        <button id="reset-app-button" class="btn btn-sm m3-button-danger">
+                            <span class="material-symbols-outlined align-middle fs-6">restart_alt</span> Reset to
+                            Default
+                        </button>
+                        <p class="small text-muted mt-2 mb-0">Warning: This will clear all notes and settings.</p>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Group Name Modal -->
+    <div class="modal fade" id="groupModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+            <div class="modal-content m3-surface text-body">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title" id="groupModalTitle">Group Name</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="text" id="group-name-input" class="form-control m3-input w-100"
+                        placeholder="Enter name...">
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-sm m3-button-tonal" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" id="group-modal-save" class="btn btn-sm m3-button-primary">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div class="modal fade" id="helpModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content m3-surface text-body">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title">Manual / Help</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body overflow-auto" style="max-height: 70vh;">
+                    <div class="mb-3 d-flex align-items-center justify-content-between">
+                        <div>
+                            <h6 class="mb-0">memable</h6>
+                            <small id="appVersion" class="text-muted"></small>
+                        </div>
+                        <a href="https://github.com/TetsuakiBaba/memable" class="text-secondary" target="_blank"
+                            rel="noopener" title="GitHub">
+                            <span class="material-symbols-outlined fs-4">terminal</span>
+                        </a>
+                    </div>
+                    <h6>Basic Operations</h6>
+                    <ul>
+                        <li><strong>Create Note</strong>: Double-click on background</li>
+                        <li><strong>Move</strong>: Drag node header</li>
+                        <li><strong>Add Images</strong>: Drag & Drop or Paste (Cmd+V)</li>
+                        <li><strong>Undo Delete</strong>: Ctrl/Cmd + Z (restores the last deleted note)</li>
+                    </ul>
+                    <hr>
+                    <h6>Keyboard Shortcuts (Map to IDs)</h6>
+                    <p class="small text-muted">Web Browser & Desktop App:</p>
+                    <ul>
+                        <li><strong>[0-9], [a-z]</strong>: Copy note content (when not typing)</li>
+                    </ul>
+                    <p class="small text-muted">Desktop App Only (Global):</p>
+                    <ul>
+                        <li><strong>Cmd/Ctrl + [0-9]</strong>: Copy content even in background</li>
+                        <li><strong>Cmd/Ctrl + Opt/Alt + [0-9]</strong>: Paste content to cursor position</li>
+                    </ul>
+                    <hr>
+                    <h6>Group Management</h6>
+                    <ul>
+                        <li><strong>Rename</strong>: Double-click group name in sidebar</li>
+                        <li><strong>Toggle</strong>: Click menu icon in sidebar header</li>
+                    </ul>
+                    <hr>
+                    <h6>Sync Settings</h6>
+                    <ul>
+                        <li>(Desktop App Only) Set an external folder in Settings for real-time synchronization between
+                            devices.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Image enlarge modal -->
     <div class="modal fade" id="imageModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
