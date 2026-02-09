@@ -3,6 +3,8 @@
 
 A temporary copy-and-paste sticky-note web application (PWA-enabled) with native app support via Electron.
 
+![Screenshot](./screenshot.png)
+
 ## Features
 - Create, edit, delete, and copy text notes
 - Save image notes via clipboard paste or drag-and-drop
