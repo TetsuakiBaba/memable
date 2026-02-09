@@ -5,6 +5,7 @@ let currentGroupId = localStorage.getItem('currentGroupId') || 'default';
 let storageMode = 'indexeddb'; // 'indexeddb' or 'external'
 let externalPath = null;
 let globalShortcutsEnabled = false;
+let isSyncing = false; // 外部同期中フラグ（ループ防止）
 const storageKey = 'memableNotes';
 
 // --- Undo Logic ---
@@ -75,6 +76,7 @@ function updateSettingsUI() {
 
 // データ保存時に外部ストレージが有効なら書き込む
 async function syncToExternalIfNeeded() {
+    if (isSyncing) return; // 外部からの同期中（読み込み中）は書き込まない
     if (storageMode === 'external' && window.electronAPI) {
         // すべてのメモとグループを取得して保存
         const allNotes = await getAllNotesDB_Full();
@@ -1457,7 +1459,6 @@ workspace.addEventListener('mouseleave', () => {
     }
 
     // 外部ファイルの変更検知ハンドラ
-    let isSyncing = false;
     if (window.electronAPI && window.electronAPI.onExternalDataChanged) {
         window.electronAPI.onExternalDataChanged(async () => {
             if (isSyncing) return;
