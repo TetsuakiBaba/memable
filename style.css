@@ -231,6 +231,10 @@ body {
     border-radius: 4px;
 }
 
+.group-action-btn.mode-kanban {
+    color: var(--m3-primary);
+}
+
 .group-action-btn:hover {
     background-color: rgba(0, 0, 0, 0.1);
 }
@@ -243,6 +247,138 @@ body {
     z-index: 1;
     overflow: auto;
     /* Added to allow scrolling for large notes */
+}
+
+#workspace.kanban-mode {
+    cursor: default;
+    padding: 12px;
+}
+
+#workspace.kanban-mode::after {
+    display: none;
+}
+
+.kanban-board {
+    display: flex;
+    gap: 12px;
+    min-height: 100%;
+    align-items: flex-start;
+}
+
+.kanban-column {
+    min-width: 280px;
+    width: 300px;
+    background: var(--m3-surface-container);
+    border: 1px solid var(--m3-outline);
+    border-radius: 14px;
+    box-shadow: var(--m3-elevation-1);
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 120px);
+    overflow: hidden;
+}
+
+.kanban-column[data-column-id='todo'] {
+    border-color: #7c4d00;
+    background: #fff6dd;
+}
+
+.kanban-column[data-column-id='doing'] {
+    border-color: #0b5394;
+    background: #e8f2ff;
+}
+
+.kanban-column[data-column-id='done'] {
+    border-color: #0f6b3d;
+    background: #e9f8ef;
+}
+
+.kanban-column-header {
+    font-weight: 600;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    border-top-left-radius: 14px;
+    border-top-right-radius: 14px;
+}
+
+.kanban-column[data-column-id='todo'] .kanban-column-header {
+    background: #ffe8aa;
+}
+
+.kanban-column[data-column-id='doing'] .kanban-column-header {
+    background: #cfe5ff;
+}
+
+.kanban-column[data-column-id='done'] .kanban-column-header {
+    background: #cdeed8;
+}
+
+.kanban-column-body {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    min-height: 120px;
+}
+
+.kanban-column-body.drag-over {
+    background: rgba(103, 80, 164, 0.08);
+}
+
+.kanban-card {
+    border-radius: 12px;
+    box-shadow: var(--m3-elevation-1);
+    overflow: hidden;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.kanban-card.dragging {
+    opacity: 0.6;
+}
+
+.kanban-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.05);
+}
+
+.kanban-card-actions {
+    display: flex;
+    align-items: center;
+}
+
+.kanban-card-actions .btn {
+    width: 28px;
+    height: 28px;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    border-radius: 50%;
+}
+
+.kanban-card-content {
+    padding: 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow: auto;
+    outline: none;
+}
+
+.kanban-card-content img {
+    max-width: 100%;
+    display: block;
+}
+
+@media (max-width: 900px) {
+    .kanban-column {
+        min-width: 240px;
+        width: 240px;
+    }
 }
 
 /* Ensure whitespace at the bottom/right for new note creation */

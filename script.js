@@ -7,6 +7,12 @@ let externalPath = null;
 let globalShortcutsEnabled = false;
 let isSyncing = false; // 外部同期中フラグ（ループ防止）
 const storageKey = 'memableNotes';
+const DEFAULT_GROUP_ID = 'default';
+const DEFAULT_KANBAN_COLUMNS = [
+    { id: 'todo', name: 'ToDo' },
+    { id: 'doing', name: 'Doing' },
+    { id: 'done', name: 'Done' }
+];
 
 // --- Undo Logic ---
 let lastDeletedNote = null;
@@ -93,37 +99,43 @@ async function syncFromExternalIfNeeded() {
             const extNotes = await window.electronAPI.loadExternalData('notes.json');
             const extGroups = await window.electronAPI.loadExternalData('groups.json');
 
-            if (extNotes || extGroups) {
-                const db = await dbPromise;
-                const tx = db.transaction(['notes', 'groups'], 'readwrite');
-
-                if (extNotes) {
-                    const noteStore = tx.objectStore('notes');
-                    noteStore.clear();
-                    for (const note of extNotes) {
-                        noteStore.put(note);
-                    }
-                }
-
-                if (extGroups) {
-                    const groupStore = tx.objectStore('groups');
-                    groupStore.clear();
-                    for (const group of extGroups) {
-                        groupStore.put(group);
-                    }
-                }
-
-                return new Promise((resolve) => {
-                    tx.oncomplete = () => {
-                        console.log('Synced from external storage');
-                        resolve();
-                    };
-                    tx.onerror = () => {
-                        console.error('Transaction error during sync', tx.error);
-                        resolve();
-                    };
-                });
+            const hasNotesFile = Array.isArray(extNotes);
+            const hasGroupsFile = Array.isArray(extGroups);
+            if (!hasNotesFile && !hasGroupsFile) {
+                return;
             }
+            const db = await dbPromise;
+            const tx = db.transaction(['notes', 'groups'], 'readwrite');
+
+            if (hasNotesFile) {
+                const groupsForNormalization = hasGroupsFile ? extGroups : await getAllGroupsDB();
+                const normalizedNotes = normalizeBackupPayload({ notes: extNotes, groups: groupsForNormalization }).notes;
+                const noteStore = tx.objectStore('notes');
+                noteStore.clear();
+                for (const note of normalizedNotes) {
+                    noteStore.put(note);
+                }
+            }
+
+            if (hasGroupsFile) {
+                const normalizedGroups = normalizeBackupPayload({ groups: extGroups, notes: [] }).groups;
+                const groupStore = tx.objectStore('groups');
+                groupStore.clear();
+                for (const group of normalizedGroups) {
+                    groupStore.put(group);
+                }
+            }
+
+            return new Promise((resolve) => {
+                tx.oncomplete = () => {
+                    console.log('Synced from external storage');
+                    resolve();
+                };
+                tx.onerror = () => {
+                    console.error('Transaction error during sync', tx.error);
+                    resolve();
+                };
+            });
         } catch (err) {
             console.error('Failed to sync from external storage:', err);
         }
@@ -185,6 +197,101 @@ const COLORS = [
 // デフォルトカラー読み込み
 let defaultNoteColor = localStorage.getItem('defaultNoteColor') || 'yellow';
 
+function cloneDefaultKanbanColumns() {
+    return DEFAULT_KANBAN_COLUMNS.map(col => ({ ...col }));
+}
+
+function normalizeKanbanColumns(columns) {
+    if (!Array.isArray(columns) || columns.length === 0) {
+        return cloneDefaultKanbanColumns();
+    }
+
+    const normalized = [];
+    const usedIds = new Set();
+
+    for (const rawCol of columns) {
+        const source = rawCol && typeof rawCol === 'object' ? rawCol : {};
+        const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : 'Untitled';
+        let id = typeof source.id === 'string' && source.id.trim() ? source.id.trim() : generateId();
+
+        while (usedIds.has(id)) {
+            id = generateId();
+        }
+        usedIds.add(id);
+        normalized.push({ id, name });
+    }
+
+    return normalized.length > 0 ? normalized : cloneDefaultKanbanColumns();
+}
+
+function normalizeGroupSchema(group) {
+    const source = group && typeof group === 'object' ? group : {};
+    const id = typeof source.id === 'string' && source.id.trim() ? source.id.trim() : generateId();
+    const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : 'Untitled';
+    const viewMode = source.viewMode === 'kanban' ? 'kanban' : 'canvas';
+    const kanbanColumns = normalizeKanbanColumns(source.kanbanColumns);
+
+    return { ...source, id, name, viewMode, kanbanColumns };
+}
+
+function getDefaultGroup() {
+    return {
+        id: DEFAULT_GROUP_ID,
+        name: 'Default',
+        viewMode: 'canvas',
+        kanbanColumns: cloneDefaultKanbanColumns()
+    };
+}
+
+function normalizeBackupPayload(payload) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const rawNotes = Array.isArray(source.notes) ? source.notes : (Array.isArray(source) ? source : []);
+    const rawGroups = Array.isArray(source.groups) ? source.groups : [];
+
+    const normalizedGroups = rawGroups.map(normalizeGroupSchema);
+    if (!normalizedGroups.some(group => group.id === DEFAULT_GROUP_ID)) {
+        normalizedGroups.push(getDefaultGroup());
+    }
+
+    const groupMap = new Map(normalizedGroups.map(group => [group.id, group]));
+    const fallbackGroup = groupMap.get(DEFAULT_GROUP_ID) || normalizedGroups[0] || getDefaultGroup();
+    const orderMap = new Map();
+
+    const normalizedNotes = rawNotes.map(rawNote => {
+        const sourceNote = rawNote && typeof rawNote === 'object' ? rawNote : {};
+        const note = { ...sourceNote };
+
+        note.id = typeof note.id === 'string' && note.id.trim() ? note.id.trim() : generateId();
+        note.groupId = typeof note.groupId === 'string' && groupMap.has(note.groupId) ? note.groupId : fallbackGroup.id;
+        note.type = note.type === 'image' ? 'image' : 'text';
+        note.content = typeof note.content === 'string' ? note.content : '';
+        note.x = Number.isFinite(note.x) ? note.x : 10;
+        note.y = Number.isFinite(note.y) ? note.y : 10;
+        note.width = Number.isFinite(note.width) ? note.width : (note.type === 'image' ? 200 : 250);
+        note.height = Number.isFinite(note.height) ? note.height : 200;
+        note.color = COLORS.some(color => color.name === note.color) ? note.color : defaultNoteColor;
+        note.zIndex = Number.isFinite(note.zIndex) ? note.zIndex : 100;
+
+        const group = groupMap.get(note.groupId) || fallbackGroup;
+        const columns = normalizeKanbanColumns(group.kanbanColumns);
+        const columnIdSet = new Set(columns.map(column => column.id));
+
+        note.kanbanColumnId =
+            typeof note.kanbanColumnId === 'string' && columnIdSet.has(note.kanbanColumnId)
+                ? note.kanbanColumnId
+                : columns[0].id;
+
+        const orderKey = `${note.groupId}:${note.kanbanColumnId}`;
+        const nextOrder = orderMap.get(orderKey) || 0;
+        note.kanbanOrder = Number.isFinite(note.kanbanOrder) ? note.kanbanOrder : nextOrder;
+        orderMap.set(orderKey, Math.max(nextOrder + 1, note.kanbanOrder + 1));
+
+        return note;
+    });
+
+    return { notes: normalizedNotes, groups: normalizedGroups };
+}
+
 // IndexedDB 初期化
 const dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open('memable-db', 2);
@@ -227,25 +334,18 @@ async function migrateLegacyNotes() {
     const noteStore = tx.objectStore('notes');
     const groupStore = tx.objectStore('groups');
 
-    // デフォルトグループの作成
-    const defaultGroup = { id: 'default', name: 'Default' };
-    const groupReq = groupStore.get('default');
+    const groupsReq = groupStore.getAll();
+    groupsReq.onsuccess = () => {
+        const allGroups = groupsReq.result || [];
+        const notesReq = noteStore.getAll();
 
-    groupReq.onsuccess = () => {
-        if (!groupReq.result) {
-            groupStore.add(defaultGroup);
-        }
-    };
+        notesReq.onsuccess = () => {
+            const allNotes = notesReq.result || [];
+            const normalized = normalizeBackupPayload({ notes: allNotes, groups: allGroups });
 
-    const notesReq = noteStore.getAll();
-    notesReq.onsuccess = () => {
-        const allNotes = notesReq.result;
-        allNotes.forEach(note => {
-            if (!note.groupId) {
-                note.groupId = 'default';
-                noteStore.put(note);
-            }
-        });
+            normalized.groups.forEach(group => groupStore.put(group));
+            normalized.notes.forEach(note => noteStore.put(note));
+        };
     };
 }
 
@@ -261,9 +361,10 @@ async function getAllGroupsDB() {
 }
 
 async function addGroupDB(group) {
+    const normalizedGroup = normalizeGroupSchema(group);
     const db = await dbPromise;
     const tx = db.transaction('groups', 'readwrite');
-    tx.objectStore('groups').add(group);
+    tx.objectStore('groups').add(normalizedGroup);
     return new Promise((res, rej) => {
         tx.oncomplete = async () => {
             await syncToExternalIfNeeded();
@@ -274,9 +375,10 @@ async function addGroupDB(group) {
 }
 
 async function updateGroupDB(group) {
+    const normalizedGroup = normalizeGroupSchema(group);
     const db = await dbPromise;
     const tx = db.transaction('groups', 'readwrite');
-    tx.objectStore('groups').put(group);
+    tx.objectStore('groups').put(normalizedGroup);
     return new Promise((res, rej) => {
         tx.oncomplete = async () => {
             await syncToExternalIfNeeded();
@@ -314,9 +416,10 @@ async function deleteGroupDB(id) {
 }
 
 async function addNoteDB(note) {
+    const normalizedNote = normalizeBackupPayload({ notes: [note], groups }).notes[0] || note;
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
-    tx.objectStore('notes').add(note);
+    tx.objectStore('notes').add(normalizedNote);
     return new Promise((res, rej) => {
         tx.oncomplete = async () => {
             await syncToExternalIfNeeded();
@@ -326,9 +429,10 @@ async function addNoteDB(note) {
     });
 }
 async function updateNoteDB(note) {
+    const normalizedNote = normalizeBackupPayload({ notes: [note], groups }).notes[0] || note;
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
-    tx.objectStore('notes').put(note);
+    tx.objectStore('notes').put(normalizedNote);
     return new Promise((res, rej) => {
         tx.oncomplete = async () => {
             await syncToExternalIfNeeded();
@@ -423,7 +527,10 @@ async function handleImport(file) {
     reader.onload = async (e) => {
         try {
             const data = JSON.parse(e.target.result);
-            if (!data.notes || !data.groups) throw new Error('Invalid data format');
+            const normalized = normalizeBackupPayload(data);
+            if (normalized.notes.length === 0 && normalized.groups.length === 0) {
+                throw new Error('Invalid data format');
+            }
 
             if (confirm('Importing will clear current data. Continue?')) {
                 const db = await dbPromise;
@@ -431,8 +538,8 @@ async function handleImport(file) {
                 tx.objectStore('notes').clear();
                 tx.objectStore('groups').clear();
 
-                for (const g of data.groups) tx.objectStore('groups').add(g);
-                for (const n of data.notes) tx.objectStore('notes').add(n);
+                for (const g of normalized.groups) tx.objectStore('groups').add(g);
+                for (const n of normalized.notes) tx.objectStore('notes').add(n);
 
                 tx.oncomplete = () => {
                     alert('Import successful! Reloading...');
@@ -547,12 +654,26 @@ function showGroupModal(title, defaultValue = '') {
 }
 
 async function loadGroups() {
-    groups = await getAllGroupsDB();
+    groups = (await getAllGroupsDB()).map(normalizeGroupSchema);
+
+    if (groups.length > 0) {
+        const db = await dbPromise;
+        const tx = db.transaction('groups', 'readwrite');
+        const groupStore = tx.objectStore('groups');
+        groups.forEach(group => groupStore.put(group));
+    }
+
     if (groups.length === 0) {
-        const defaultGroup = { id: 'default', name: 'Default' };
+        const defaultGroup = getDefaultGroup();
         await addGroupDB(defaultGroup);
         groups = [defaultGroup];
     }
+
+    if (!groups.some(group => group.id === currentGroupId)) {
+        currentGroupId = DEFAULT_GROUP_ID;
+        localStorage.setItem('currentGroupId', currentGroupId);
+    }
+
     renderGroups();
 }
 
@@ -571,7 +692,25 @@ function renderGroups() {
         const actionsEl = document.createElement('div');
         actionsEl.className = 'group-actions';
 
-        if (group.id !== 'default') {
+        const modeBtn = document.createElement('button');
+        modeBtn.className = 'group-action-btn material-symbols-outlined';
+        if (group.viewMode === 'kanban') {
+            modeBtn.classList.add('mode-kanban');
+        }
+        modeBtn.textContent = group.viewMode === 'kanban' ? 'view_kanban' : 'sticky_note_2';
+        modeBtn.title = group.viewMode === 'kanban' ? 'Switch to Canvas mode' : 'Switch to Kanban mode';
+        modeBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            group.viewMode = group.viewMode === 'kanban' ? 'canvas' : 'kanban';
+            await updateGroupDB(group);
+            renderGroups();
+            if (group.id === currentGroupId) {
+                renderWorkspace();
+            }
+        });
+        actionsEl.appendChild(modeBtn);
+
+        if (group.id !== DEFAULT_GROUP_ID) {
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'group-action-btn material-symbols-outlined';
             deleteBtn.textContent = 'delete';
@@ -614,11 +753,182 @@ async function switchGroup(groupId) {
     await loadNotes();
 }
 
+function getCurrentGroup() {
+    return groups.find(group => group.id === currentGroupId) || getDefaultGroup();
+}
+
+function isCurrentGroupKanban() {
+    return getCurrentGroup().viewMode === 'kanban';
+}
+
+function getNotesForCurrentMode() {
+    if (!isCurrentGroupKanban()) return notes;
+
+    return [...notes].sort((a, b) => {
+        const colA = a.kanbanColumnId || '';
+        const colB = b.kanbanColumnId || '';
+        if (colA !== colB) return colA.localeCompare(colB);
+        return (a.kanbanOrder || 0) - (b.kanbanOrder || 0);
+    });
+}
+
+function renderWorkspace() {
+    workspace.innerHTML = '';
+    workspace.classList.toggle('kanban-mode', isCurrentGroupKanban());
+
+    if (isCurrentGroupKanban()) {
+        renderKanbanBoard();
+    } else {
+        notes.forEach(renderNote);
+    }
+}
+
+function renderKanbanBoard() {
+    const group = getCurrentGroup();
+    const columns = normalizeKanbanColumns(group.kanbanColumns);
+
+    const boardEl = document.createElement('div');
+    boardEl.className = 'kanban-board';
+
+    for (const column of columns) {
+        const columnEl = document.createElement('section');
+        columnEl.className = 'kanban-column';
+        columnEl.dataset.columnId = column.id;
+
+        const headerEl = document.createElement('div');
+        headerEl.className = 'kanban-column-header';
+        headerEl.textContent = column.name;
+
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'kanban-column-body';
+        bodyEl.dataset.columnId = column.id;
+
+        bodyEl.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            bodyEl.classList.add('drag-over');
+        });
+        bodyEl.addEventListener('dragleave', () => {
+            bodyEl.classList.remove('drag-over');
+        });
+        bodyEl.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            bodyEl.classList.remove('drag-over');
+            const noteId = e.dataTransfer.getData('text/plain');
+            if (!noteId) return;
+
+            const note = notes.find(n => n.id === noteId);
+            if (!note) return;
+
+            note.kanbanColumnId = column.id;
+            const maxOrder = notes
+                .filter(n => n.groupId === currentGroupId && n.kanbanColumnId === column.id)
+                .reduce((acc, n) => Math.max(acc, Number.isFinite(n.kanbanOrder) ? n.kanbanOrder : 0), -1);
+            note.kanbanOrder = maxOrder + 1;
+            await updateNoteDB(note);
+            renderWorkspace();
+            await assignNoteIds();
+        });
+
+        columnEl.appendChild(headerEl);
+        columnEl.appendChild(bodyEl);
+        boardEl.appendChild(columnEl);
+    }
+
+    workspace.appendChild(boardEl);
+
+    const notesForRender = getNotesForCurrentMode();
+    notesForRender.forEach(note => renderKanbanCard(note));
+}
+
+function renderKanbanCard(note) {
+    const targetColumn = workspace.querySelector(`.kanban-column-body[data-column-id='${note.kanbanColumnId}']`)
+        || workspace.querySelector('.kanban-column-body');
+    if (!targetColumn) return;
+
+    const cardEl = document.createElement('article');
+    cardEl.className = 'kanban-card';
+    cardEl.dataset.id = note.id;
+    cardEl.draggable = true;
+    cardEl.style.backgroundColor = COLORS.find(c => c.name === note.color)?.hex || COLORS[0].hex;
+
+    cardEl.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', note.id);
+        cardEl.classList.add('dragging');
+    });
+    cardEl.addEventListener('dragend', () => {
+        cardEl.classList.remove('dragging');
+    });
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'kanban-card-header';
+
+    const idEl = document.createElement('span');
+    idEl.className = 'note-id';
+    idEl.textContent = note.keyId || '';
+    idEl.title = 'ショートカットキー';
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'kanban-card-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'btn';
+    copyBtn.innerHTML = '<span class="material-symbols-outlined">content_copy</span>';
+    copyBtn.title = 'コピー';
+    copyBtn.addEventListener('click', async () => {
+        await handleCopy(note);
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn text-danger';
+    deleteBtn.innerHTML = '<span class="material-symbols-outlined">delete</span>';
+    deleteBtn.title = '削除';
+    deleteBtn.addEventListener('click', async () => {
+        lastDeletedNote = { ...note };
+        notes = notes.filter(n => n.id !== note.id);
+        await deleteNoteDB(note.id);
+        renderWorkspace();
+        updateNoteCount();
+        await assignNoteIds();
+        showToast('Note deleted. Press Ctrl+Z to undo.');
+    });
+
+    actionsEl.appendChild(copyBtn);
+    actionsEl.appendChild(deleteBtn);
+    headerEl.appendChild(idEl);
+    headerEl.appendChild(actionsEl);
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'kanban-card-content';
+    if (note.type === 'text') {
+        contentEl.contentEditable = 'true';
+        contentEl.spellcheck = false;
+        contentEl.textContent = note.content;
+        contentEl.addEventListener('blur', async () => {
+            note.content = contentEl.innerText;
+            await updateNoteDB(note);
+        });
+    } else {
+        const img = document.createElement('img');
+        img.src = note.content;
+        img.alt = 'note image';
+        contentEl.appendChild(img);
+    }
+
+    cardEl.appendChild(headerEl);
+    cardEl.appendChild(contentEl);
+    targetColumn.appendChild(cardEl);
+}
+
 async function createNewGroup() {
     const name = await showGroupModal('New Group');
     if (!name) return;
     const id = generateId();
-    const newGroup = { id, name };
+    const newGroup = {
+        id,
+        name,
+        viewMode: 'canvas',
+        kanbanColumns: cloneDefaultKanbanColumns()
+    };
     await addGroupDB(newGroup);
     groups.push(newGroup);
     renderGroups();
@@ -638,10 +948,16 @@ async function deleteGroup(id) {
     await deleteGroupDB(id);
     groups = groups.filter(g => g.id !== id);
     if (currentGroupId === id) {
-        await switchGroup('default');
+        await switchGroup(DEFAULT_GROUP_ID);
     } else {
         renderGroups();
     }
+}
+
+function getPrimaryKanbanColumnId(groupId) {
+    const group = groups.find(g => g.id === groupId) || groups.find(g => g.id === DEFAULT_GROUP_ID);
+    const columns = normalizeKanbanColumns(group ? group.kanbanColumns : null);
+    return columns[0].id;
 }
 
 if (addGroupButton) {
@@ -652,8 +968,8 @@ if (addGroupButton) {
 async function loadNotes() {
     await migrateLegacyNotes();
     await loadGroups();
-    notes = await getAllNotesDB(currentGroupId);
-    notes.forEach(renderNote);
+    notes = normalizeBackupPayload({ notes: await getAllNotesDB(currentGroupId), groups }).notes;
+    renderWorkspace();
     updateNoteCount();
     await assignNoteIds();
 }
@@ -666,6 +982,11 @@ function updateNoteCount() {
 
 // Align notes to grid
 async function alignNotes() {
+    if (isCurrentGroupKanban()) {
+        showToast('Align is available in Canvas mode only');
+        return;
+    }
+
     if (notes.length === 0) return;
 
     // Sort notes by updated time
@@ -714,8 +1035,7 @@ async function alignNotes() {
         await syncToExternalIfNeeded();
 
         // Refresh UI
-        workspace.innerHTML = '';
-        notes.forEach(renderNote);
+        renderWorkspace();
         showToast('Notes aligned to grid');
     } catch (err) {
         console.error('Alignment failed:', err);
@@ -1068,7 +1388,8 @@ function renderNote(note) {
 }
 
 // add new text note
-async function createNewNote(text, x = snap(10), y = snap(10)) {
+async function createNewNote(text, x = snap(10), y = snap(10), targetColumnId = null) {
+    const defaultColumnId = targetColumnId || getPrimaryKanbanColumnId(currentGroupId);
     const note = {
         id: generateId(),
         groupId: currentGroupId,
@@ -1079,17 +1400,42 @@ async function createNewNote(text, x = snap(10), y = snap(10)) {
         width: 250,
         height: 200,
         color: defaultNoteColor,
-        zIndex: maxZIndex++ // 新規作成時も zIndex を保存
+        zIndex: maxZIndex++, // 新規作成時も zIndex を保存
+        kanbanColumnId: defaultColumnId,
+        kanbanOrder: notes.filter(n => n.groupId === currentGroupId && n.kanbanColumnId === defaultColumnId).length
     };
     await addNoteDB(note);
     notes.push(note);
-    renderNote(note);
+    renderWorkspace();
     updateNoteCount();
     await assignNoteIds();
 }
 
 // ダブルクリックで新規メモ作成
 workspace.addEventListener('dblclick', async (e) => {
+    if (isCurrentGroupKanban()) {
+        const columnBody = e.target.closest('.kanban-column-body');
+        if (!columnBody) return;
+
+        await createNewNote('New Note', snap(10), snap(10), columnBody.dataset.columnId);
+
+        const lastNote = notes[notes.length - 1];
+        const cardEl = workspace.querySelector(`[data-id='${lastNote.id}']`);
+        if (cardEl) {
+            const contentEl = cardEl.querySelector('.kanban-card-content');
+            if (contentEl) {
+                contentEl.focus();
+                const range = document.createRange();
+                const sel = window.getSelection();
+                range.selectNodeContents(contentEl);
+                range.collapse(false);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        }
+        return;
+    }
+
     // ノート自体やノート内の要素をクリックした場合は何もしない
     if (e.target !== workspace) return;
 
@@ -1156,6 +1502,7 @@ document.addEventListener('paste', async e => {
                     // 画面中央付近に配置（スクロール分を加算）
                     const x = snap((window.innerWidth - 200) / 2 + workspace.scrollLeft);
                     const y = snap((window.innerHeight - 200) / 2 + workspace.scrollTop);
+                    const defaultColumnId = getPrimaryKanbanColumnId(currentGroupId);
                     const note = {
                         id: generateId(),
                         groupId: currentGroupId,
@@ -1166,11 +1513,13 @@ document.addEventListener('paste', async e => {
                         width: 200,
                         height: 200,
                         color: defaultNoteColor,
-                        zIndex: maxZIndex++ // paste時も zIndex を保存
+                        zIndex: maxZIndex++, // paste時も zIndex を保存
+                        kanbanColumnId: defaultColumnId,
+                        kanbanOrder: notes.filter(n => n.groupId === currentGroupId && n.kanbanColumnId === defaultColumnId).length
                     };
                     await addNoteDB(note);
                     notes.push(note);
-                    renderNote(note);
+                    renderWorkspace();
                     updateNoteCount();
                     await assignNoteIds();
                 };
@@ -1218,6 +1567,7 @@ globalDropZone.addEventListener('drop', async e => {
                 // 画面中央に配置（スクロール分を加算）
                 const baseX = (window.innerWidth - 200) / 2 + workspace.scrollLeft;
                 const baseY = (window.innerHeight - 200) / 2 + workspace.scrollTop;
+                const defaultColumnId = getPrimaryKanbanColumnId(currentGroupId);
                 const note = {
                     id: generateId(),
                     groupId: currentGroupId,
@@ -1228,11 +1578,13 @@ globalDropZone.addEventListener('drop', async e => {
                     width: 200,
                     height: 200,
                     color: defaultNoteColor,
-                    zIndex: maxZIndex++
+                    zIndex: maxZIndex++,
+                    kanbanColumnId: defaultColumnId,
+                    kanbanOrder: notes.filter(n => n.groupId === currentGroupId && n.kanbanColumnId === defaultColumnId).length
                 };
                 await addNoteDB(note);
                 notes.push(note);
-                renderNote(note);
+                renderWorkspace();
                 updateNoteCount();
                 await assignNoteIds();
             };
