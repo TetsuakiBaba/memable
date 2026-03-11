@@ -8,6 +8,12 @@ updateElectronApp();
 
 let mainWindow;
 
+// Prevent multiple app processes from sharing the same userData/IndexedDB files.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+    app.quit();
+}
+
 // --- Persistence for Settings ---
 const configPath = path.join(app.getPath('userData'), 'config.json');
 let config = { externalPath: null, globalShortcutsEnabled: false };
@@ -88,11 +94,19 @@ function createWindow() {
     return mainWindow;
 }
 
-app.whenReady().then(() => {
-    mainWindow = createWindow();
-    startWatching();
-    registerShortcuts();
-});
+if (gotSingleInstanceLock) {
+    app.on('second-instance', () => {
+        if (!mainWindow) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+    });
+
+    app.whenReady().then(() => {
+        mainWindow = createWindow();
+        startWatching();
+        registerShortcuts();
+    });
+}
 
 // --- IPC Handlers for Storage ---
 ipcMain.handle('toggle-shortcuts', async (event, enabled) => {

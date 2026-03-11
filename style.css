@@ -326,6 +326,11 @@ body {
     background: rgba(103, 80, 164, 0.08);
 }
 
+body.kanban-drop-copy-cursor,
+body.kanban-drop-copy-cursor * {
+    cursor: copy !important;
+}
+
 .kanban-card {
     border-radius: 12px;
     box-shadow: var(--m3-elevation-1);
@@ -349,6 +354,17 @@ body {
 .kanban-card-actions {
     display: flex;
     align-items: center;
+    gap: 6px;
+}
+
+.kanban-color-panel {
+    height: 28px;
+    gap: 3px;
+}
+
+.kanban-color-panel .color-swatch {
+    width: 12px;
+    height: 12px;
 }
 
 .kanban-card-actions .btn {

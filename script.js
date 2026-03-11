@@ -13,6 +13,7 @@ const DEFAULT_KANBAN_COLUMNS = [
     { id: 'doing', name: 'Doing' },
     { id: 'done', name: 'Done' }
 ];
+const KANBAN_FREE_CANVAS_ID = '__kanban_free_canvas__';
 
 // --- Undo Logic ---
 let lastDeletedNote = null;
@@ -277,7 +278,7 @@ function normalizeBackupPayload(payload) {
         const columnIdSet = new Set(columns.map(column => column.id));
 
         note.kanbanColumnId =
-            typeof note.kanbanColumnId === 'string' && columnIdSet.has(note.kanbanColumnId)
+            typeof note.kanbanColumnId === 'string' && (columnIdSet.has(note.kanbanColumnId) || note.kanbanColumnId === KANBAN_FREE_CANVAS_ID)
                 ? note.kanbanColumnId
                 : columns[0].id;
 
@@ -772,8 +773,15 @@ function getNotesForCurrentMode() {
     });
 }
 
+function isKanbanFreeCanvasNote(note) {
+    return note.kanbanColumnId === KANBAN_FREE_CANVAS_ID;
+}
+
 function renderWorkspace() {
     workspace.innerHTML = '';
+    workspace.ondragover = null;
+    workspace.ondrop = null;
+    workspace.ondragleave = null;
     workspace.classList.toggle('kanban-mode', isCurrentGroupKanban());
 
     if (isCurrentGroupKanban()) {
@@ -812,6 +820,7 @@ function renderKanbanBoard() {
         });
         bodyEl.addEventListener('drop', async (e) => {
             e.preventDefault();
+            e.stopPropagation();
             bodyEl.classList.remove('drag-over');
             const noteId = e.dataTransfer.getData('text/plain');
             if (!noteId) return;
@@ -836,8 +845,46 @@ function renderKanbanBoard() {
 
     workspace.appendChild(boardEl);
 
+    workspace.ondragover = (e) => {
+        const isOnColumnBody = e.target.closest('.kanban-column-body');
+        if (isOnColumnBody) return;
+        if (e.dataTransfer && e.dataTransfer.types.includes('text/plain')) {
+            e.preventDefault();
+        }
+    };
+
+    workspace.ondrop = async (e) => {
+        const isOnColumnBody = e.target.closest('.kanban-column-body');
+        if (isOnColumnBody) return;
+
+        const noteId = e.dataTransfer.getData('text/plain');
+        if (!noteId) return;
+        e.preventDefault();
+
+        const note = notes.find(n => n.id === noteId);
+        if (!note) return;
+
+        const rect = workspace.getBoundingClientRect();
+        const baseWidth = Number.isFinite(note.width) ? note.width : 250;
+        const baseHeight = Number.isFinite(note.height) ? note.height : 200;
+        const rawX = e.clientX - rect.left + workspace.scrollLeft - (baseWidth / 2);
+        const rawY = e.clientY - rect.top + workspace.scrollTop - 18;
+
+        note.kanbanColumnId = KANBAN_FREE_CANVAS_ID;
+        note.x = snap(Math.max(0, rawX));
+        note.y = snap(Math.max(0, rawY));
+        note.kanbanOrder = 0;
+        await updateNoteDB(note);
+        renderWorkspace();
+        await assignNoteIds();
+    };
+
     const notesForRender = getNotesForCurrentMode();
-    notesForRender.forEach(note => renderKanbanCard(note));
+    notesForRender.filter(note => !isKanbanFreeCanvasNote(note)).forEach(note => renderKanbanCard(note));
+    notesForRender
+        .filter(note => isKanbanFreeCanvasNote(note))
+        .sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0))
+        .forEach(note => renderNote(note));
 }
 
 function renderKanbanCard(note) {
@@ -870,6 +917,28 @@ function renderKanbanCard(note) {
     const actionsEl = document.createElement('div');
     actionsEl.className = 'kanban-card-actions';
 
+    const colorPanel = document.createElement('div');
+    colorPanel.className = 'color-panel kanban-color-panel';
+    COLORS.forEach(c => {
+        const sw = document.createElement('div');
+        sw.className = 'color-swatch';
+        sw.style.backgroundColor = c.hex;
+        sw.dataset.color = c.name;
+        if (c.name === note.color) sw.classList.add('selected');
+        sw.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            note.color = c.name;
+            defaultNoteColor = c.name;
+            localStorage.setItem('defaultNoteColor', defaultNoteColor);
+
+            cardEl.style.backgroundColor = c.hex;
+            colorPanel.querySelectorAll('.color-swatch').forEach(el => el.classList.remove('selected'));
+            sw.classList.add('selected');
+            await updateNoteDB(note);
+        });
+        colorPanel.appendChild(sw);
+    });
+
     const copyBtn = document.createElement('button');
     copyBtn.className = 'btn';
     copyBtn.innerHTML = '<span class="material-symbols-outlined">content_copy</span>';
@@ -892,6 +961,7 @@ function renderKanbanCard(note) {
         showToast('Note deleted. Press Ctrl+Z to undo.');
     });
 
+    actionsEl.appendChild(colorPanel);
     actionsEl.appendChild(copyBtn);
     actionsEl.appendChild(deleteBtn);
     headerEl.appendChild(idEl);
@@ -1219,6 +1289,27 @@ function renderNote(note) {
     const actions = document.createElement('div');
     actions.className = 'header-actions';
 
+    if (isCurrentGroupKanban() && isKanbanFreeCanvasNote(note)) {
+        const moveToKanbanBtn = document.createElement('button');
+        moveToKanbanBtn.className = 'btn';
+        moveToKanbanBtn.innerHTML = '<span class="material-symbols-outlined">view_kanban</span>';
+        moveToKanbanBtn.title = 'ToDo列へ戻す';
+        moveToKanbanBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const targetColumnId = getPrimaryKanbanColumnId(currentGroupId);
+            const maxOrder = notes
+                .filter(n => n.groupId === currentGroupId && n.kanbanColumnId === targetColumnId)
+                .reduce((acc, n) => Math.max(acc, Number.isFinite(n.kanbanOrder) ? n.kanbanOrder : 0), -1);
+
+            note.kanbanColumnId = targetColumnId;
+            note.kanbanOrder = maxOrder + 1;
+            await updateNoteDB(note);
+            renderWorkspace();
+            await assignNoteIds();
+        });
+        actions.appendChild(moveToKanbanBtn);
+    }
+
     // copy button
     const copyBtn = document.createElement('button');
     copyBtn.className = 'btn';
@@ -1274,18 +1365,74 @@ function renderNote(note) {
     // drag
     let isDragging = false;
     let offsetX, offsetY;
-    header.addEventListener('mousedown', e => {
+    const isKanbanFreeCanvas = isCurrentGroupKanban() && isKanbanFreeCanvasNote(note);
+    let hoveredDropColumnBody = null;
+
+    const clearKanbanDropHoverFeedback = () => {
+        if (hoveredDropColumnBody) {
+            hoveredDropColumnBody.classList.remove('drag-over');
+            hoveredDropColumnBody = null;
+        }
+        document.body.classList.remove('kanban-drop-copy-cursor');
+    };
+
+    const isInteractiveDragTarget = (target) => {
+        if (!(target instanceof Element)) return false;
+        return Boolean(target.closest('.header-actions, .color-panel, .color-swatch, .btn, .note-content, [contenteditable="true"], input, textarea, select, button, a'));
+    };
+
+    const isOnNativeResizeHandle = (event) => {
+        if (!isKanbanFreeCanvas) return false;
+        const rect = noteEl.getBoundingClientRect();
+        const handleSize = 18;
+        return event.clientX >= rect.right - handleSize && event.clientY >= rect.bottom - handleSize;
+    };
+
+    const dragHandle = isKanbanFreeCanvas ? noteEl : header;
+    dragHandle.addEventListener('mousedown', e => {
+        if (e.button !== 0) return;
+        if (isKanbanFreeCanvas && isInteractiveDragTarget(e.target)) return;
+        if (isOnNativeResizeHandle(e)) return;
         isDragging = true;
-        offsetX = e.clientX - noteEl.offsetLeft;
-        offsetY = e.clientY - noteEl.offsetTop;
+        const noteRect = noteEl.getBoundingClientRect();
+        offsetX = e.clientX - noteRect.left;
+        offsetY = e.clientY - noteRect.top;
     });
 
     document.addEventListener('mousemove', e => {
         if (!isDragging) return;
-        const rawX = e.clientX - offsetX;
-        const rawY = e.clientY - offsetY;
+        const workspaceRect = workspace.getBoundingClientRect();
+        const rawX = e.clientX - workspaceRect.left + workspace.scrollLeft - offsetX;
+        const rawY = e.clientY - workspaceRect.top + workspace.scrollTop - offsetY;
         noteEl.style.left = snap(rawX) + 'px';
         noteEl.style.top = snap(rawY) + 'px';
+
+        if (isKanbanFreeCanvas) {
+            const originalVisibility = noteEl.style.visibility;
+            noteEl.style.visibility = 'hidden';
+            let dropTarget = null;
+            try {
+                dropTarget = document.elementFromPoint(e.clientX, e.clientY);
+            } finally {
+                noteEl.style.visibility = originalVisibility;
+            }
+
+            const nextColumnBody = dropTarget && dropTarget.closest
+                ? dropTarget.closest('.kanban-column-body')
+                : null;
+
+            if (hoveredDropColumnBody && hoveredDropColumnBody !== nextColumnBody) {
+                hoveredDropColumnBody.classList.remove('drag-over');
+            }
+
+            hoveredDropColumnBody = nextColumnBody || null;
+            if (hoveredDropColumnBody) {
+                hoveredDropColumnBody.classList.add('drag-over');
+                document.body.classList.add('kanban-drop-copy-cursor');
+            } else {
+                document.body.classList.remove('kanban-drop-copy-cursor');
+            }
+        }
     });
 
     document.addEventListener('mouseup', async e => {
@@ -1296,10 +1443,31 @@ function renderNote(note) {
             const id = noteEl.dataset.id;
             const idx = notes.findIndex(n => n.id === id);
             if (idx > -1) {
+                if (isKanbanFreeCanvas) {
+                    // Custom drag uses absolute note movement; detect underlying kanban column on drop.
+                    const targetColumnBody = hoveredDropColumnBody;
+                    clearKanbanDropHoverFeedback();
+
+                    if (targetColumnBody && targetColumnBody.dataset.columnId) {
+                        const targetColumnId = targetColumnBody.dataset.columnId;
+                        const maxOrder = notes
+                            .filter(n => n.groupId === currentGroupId && n.kanbanColumnId === targetColumnId)
+                            .reduce((acc, n) => Math.max(acc, Number.isFinite(n.kanbanOrder) ? n.kanbanOrder : 0), -1);
+
+                        notes[idx].kanbanColumnId = targetColumnId;
+                        notes[idx].kanbanOrder = maxOrder + 1;
+                        await updateNoteDB(notes[idx]);
+                        renderWorkspace();
+                        await assignNoteIds();
+                        return;
+                    }
+                }
+
                 notes[idx].x = noteEl.offsetLeft;
                 notes[idx].y = noteEl.offsetTop;
                 await updateNoteDB(notes[idx]);
             }
+            clearKanbanDropHoverFeedback();
         }
     });
 
@@ -1415,14 +1583,38 @@ async function createNewNote(text, x = snap(10), y = snap(10), targetColumnId = 
 workspace.addEventListener('dblclick', async (e) => {
     if (isCurrentGroupKanban()) {
         const columnBody = e.target.closest('.kanban-column-body');
-        if (!columnBody) return;
+        if (columnBody) {
+            await createNewNote('New Note', snap(10), snap(10), columnBody.dataset.columnId);
 
-        await createNewNote('New Note', snap(10), snap(10), columnBody.dataset.columnId);
+            const lastNote = notes[notes.length - 1];
+            const cardEl = workspace.querySelector(`[data-id='${lastNote.id}']`);
+            if (cardEl) {
+                const contentEl = cardEl.querySelector('.kanban-card-content');
+                if (contentEl) {
+                    contentEl.focus();
+                    const range = document.createRange();
+                    const sel = window.getSelection();
+                    range.selectNodeContents(contentEl);
+                    range.collapse(false);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+            }
+            return;
+        }
+
+        if (e.target.closest('.kanban-card') || e.target.closest('.note')) return;
+
+        const rect = workspace.getBoundingClientRect();
+        const x = snap(e.clientX - rect.left + workspace.scrollLeft);
+        const y = snap(e.clientY - rect.top + workspace.scrollTop);
+
+        await createNewNote('New Note', x, y, KANBAN_FREE_CANVAS_ID);
 
         const lastNote = notes[notes.length - 1];
-        const cardEl = workspace.querySelector(`[data-id='${lastNote.id}']`);
-        if (cardEl) {
-            const contentEl = cardEl.querySelector('.kanban-card-content');
+        const noteEl = workspace.querySelector(`[data-id='${lastNote.id}']`);
+        if (noteEl) {
+            const contentEl = noteEl.querySelector('.note-content');
             if (contentEl) {
                 contentEl.focus();
                 const range = document.createRange();
