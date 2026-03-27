@@ -22,8 +22,21 @@ const workspace = document.getElementById('workspace');
 const groupList = document.getElementById('group-list');
 const addGroupButton = document.getElementById('add-group-button');
 const shortcutToggleSwitch = document.getElementById('shortcut-toggle-switch');
+const noteResizeObservers = new Map();
 
 // --- Storage & Settings Logic ---
+function disconnectNoteObserver(noteId) {
+    const observer = noteResizeObservers.get(noteId);
+    if (observer) {
+        observer.disconnect();
+        noteResizeObservers.delete(noteId);
+    }
+}
+
+function cleanupNoteObservers() {
+    noteResizeObservers.forEach(observer => observer.disconnect());
+    noteResizeObservers.clear();
+}
 async function initSettings() {
     if (window.electronAPI) {
         const config = await window.electronAPI.getStorageConfig();
@@ -749,6 +762,7 @@ async function switchGroup(groupId) {
 
     renderGroups();
 
+    cleanupNoteObservers();
     workspace.innerHTML = '';
     notes = [];
     await loadNotes();
@@ -778,6 +792,7 @@ function isKanbanFreeCanvasNote(note) {
 }
 
 function renderWorkspace() {
+    cleanupNoteObservers();
     workspace.innerHTML = '';
     workspace.ondragover = null;
     workspace.ondrop = null;
@@ -1356,10 +1371,7 @@ function renderNote(note) {
 
     workspace.appendChild(noteEl);
 
-    // 初期表示時に自動リサイズ
-    if (note.type === 'text') {
-        autoResizeNote(noteEl, note);
-    }
+
 
     // events
     // drag
@@ -1471,6 +1483,7 @@ function renderNote(note) {
         }
     });
 
+    disconnectNoteObserver(note.id);
     // リサイズ処理: ResizeObserver でリサイズ後をDBに保存
     // 初回コールをスキップするフラグ
     let isInitialResize = true;
@@ -1499,6 +1512,7 @@ function renderNote(note) {
         }
     });
     resizeObserver.observe(noteEl);
+    noteResizeObservers.set(note.id, resizeObserver);
 
     // copy
     copyBtn.addEventListener('click', async () => {
@@ -1510,6 +1524,7 @@ function renderNote(note) {
         // 保存（1つ分のみ）
         lastDeletedNote = { ...note };
 
+        disconnectNoteObserver(note.id);
         workspace.removeChild(noteEl);
         notes = notes.filter(n => n.id !== note.id);
         await deleteNoteDB(note.id);
@@ -1574,7 +1589,16 @@ async function createNewNote(text, x = snap(10), y = snap(10), targetColumnId = 
     };
     await addNoteDB(note);
     notes.push(note);
-    renderWorkspace();
+    let newNoteEl;
+    if (isCurrentGroupKanban()) {
+        renderWorkspace();
+    } else {
+        renderNote(note);
+        newNoteEl = workspace.querySelector(`[data-id='${note.id}']`);
+        if (note.type === 'text' && newNoteEl) {
+            autoResizeNote(newNoteEl, note);
+        }
+    }
     updateNoteCount();
     await assignNoteIds();
 }
@@ -1790,6 +1814,7 @@ clearAllButton.addEventListener('click', async () => {
     if (confirm('Are you sure you want to delete all notes in this group?')) {
         await clearAllNotesDB(currentGroupId);
         notes = [];
+        cleanupNoteObservers();
         workspace.innerHTML = '';
         updateNoteCount();
     }
@@ -2013,6 +2038,7 @@ workspace.addEventListener('mouseleave', () => {
                 await syncFromExternalIfNeeded();
 
                 // UIをリフレッシュ
+                cleanupNoteObservers();
                 workspace.innerHTML = '';
                 notes = [];
                 await loadNotes();
