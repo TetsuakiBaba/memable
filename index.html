@@ -36,6 +36,18 @@
             <button id="align-notes" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Align Notes">
                 <span class="material-symbols-outlined">grid_view</span>
             </button>
+            <button id="zoom-out-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button"
+                title="Zoom Out (Cmd/Ctrl + -)">
+                <span class="material-symbols-outlined">remove</span>
+            </button>
+            <button id="zoom-reset-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button"
+                title="Reset Zoom (Cmd/Ctrl + 0)">
+                <span id="zoom-level-label" class="zoom-level-label">100%</span>
+            </button>
+            <button id="zoom-in-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button"
+                title="Zoom In (Cmd/Ctrl + +)">
+                <span class="material-symbols-outlined">add</span>
+            </button>
             <button id="settings-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Settings">
                 <span class="material-symbols-outlined">settings</span>
             </button>
@@ -157,6 +169,35 @@
         </div>
     </div>
 
+    <div class="modal fade" id="kanbanColumnsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content m3-surface text-body">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title">Kanban Steps</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="small text-muted mb-3">ToDo と Done は固定です。中間ステップだけ名称変更と追加・削除ができます。</p>
+                    <div class="kanban-fixed-stage mb-2">
+                        <span class="kanban-fixed-stage-label">ToDo</span>
+                    </div>
+                    <div id="kanban-columns-editor" class="d-grid gap-2"></div>
+                    <button type="button" id="add-kanban-step-button" class="btn btn-sm m3-button-tonal mt-3">
+                        <span class="material-symbols-outlined align-middle fs-6">add</span> Add Step
+                    </button>
+                    <div class="kanban-fixed-stage mt-3">
+                        <span class="kanban-fixed-stage-label">Done</span>
+                    </div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button type="button" class="btn btn-sm m3-button-tonal" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" id="kanban-columns-modal-save"
+                        class="btn btn-sm m3-button-primary">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Help Modal -->
     <div class="modal fade" id="helpModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
@@ -188,6 +229,7 @@
                     <p class="small text-muted">Web Browser & Desktop App (Internal):</p>
                     <ul>
                         <li><strong>[1-0], [a-z]</strong>: Copy note content to clipboard</li>
+                        <li><strong>Cmd/Ctrl + [+/-/0]</strong>: Zoom in / out / reset</li>
                     </ul>
                     <p class="small text-muted">Desktop App Only (Global):</p>
                     <ul>
@@ -198,6 +240,8 @@
                     <h6>Group Management</h6>
                     <ul>
                         <li><strong>Rename</strong>: Double-click group name in sidebar</li>
+                        <li><strong>Kanban Steps</strong>: Click the tune icon in a group to rename or add intermediate
+                            steps</li>
                         <li><strong>Toggle</strong>: Click menu icon in sidebar header</li>
                     </ul>
                     <hr>

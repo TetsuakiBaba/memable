@@ -8,11 +8,12 @@ let globalShortcutsEnabled = false;
 let isSyncing = false; // 外部同期中フラグ（ループ防止）
 const storageKey = 'memableNotes';
 const DEFAULT_GROUP_ID = 'default';
-const DEFAULT_KANBAN_COLUMNS = [
-    { id: 'todo', name: 'ToDo' },
-    { id: 'doing', name: 'Doing' },
-    { id: 'done', name: 'Done' }
+const DEFAULT_KANBAN_TODO_COLUMN = { id: 'todo', name: 'ToDo' };
+const DEFAULT_KANBAN_DONE_COLUMN = { id: 'done', name: 'Done' };
+const DEFAULT_KANBAN_MIDDLE_COLUMNS = [
+    { id: 'doing', name: 'Doing' }
 ];
+const DEFAULT_KANBAN_COLUMNS = buildKanbanColumns(DEFAULT_KANBAN_MIDDLE_COLUMNS);
 const KANBAN_FREE_CANVAS_ID = '__kanban_free_canvas__';
 
 // --- Undo Logic ---
@@ -172,8 +173,11 @@ async function getAllNotesDB_Full() {
 // load grid snap state from localStorage
 const savedGridSnap = localStorage.getItem('gridSnapEnabled');
 let isGridSnap = savedGridSnap === 'true';
+const savedZoomPercent = Number(localStorage.getItem('uiZoomPercent'));
+let uiZoomPercent = Number.isFinite(savedZoomPercent) && savedZoomPercent > 0 ? savedZoomPercent : 100;
 const gridToggle = document.getElementById('grid-toggle');
 const clearAllButton = document.getElementById('clear-all-button');
+const zoomLevelLabel = document.getElementById('zoom-level-label');
 
 // z-index 管理用
 let maxZIndex = 100;
@@ -184,8 +188,47 @@ function updateGridToggleButton() {
         gridToggle.innerHTML = `<span class="material-symbols-outlined">grid_4x4</span> <span class="btn-text">Grid: ${isGridSnap ? 'ON' : 'OFF'}</span>`;
     }
 }
+
+function clampZoomPercent(value) {
+    return Math.min(200, Math.max(50, value));
+}
+
+function getZoomScale() {
+    return uiZoomPercent / 100;
+}
+
+function convertViewportDeltaToWorkspace(delta) {
+    return delta / getZoomScale();
+}
+
+function updateZoomUI() {
+    if (zoomLevelLabel) {
+        zoomLevelLabel.textContent = `${uiZoomPercent}%`;
+    }
+}
+
+function applyZoom() {
+    uiZoomPercent = clampZoomPercent(uiZoomPercent);
+    const zoomScale = getZoomScale();
+    document.documentElement.style.setProperty('--ui-zoom-scale', String(zoomScale));
+    document.body.style.zoom = String(zoomScale);
+    localStorage.setItem('uiZoomPercent', String(uiZoomPercent));
+    updateZoomUI();
+}
+
+function changeZoom(delta) {
+    uiZoomPercent = clampZoomPercent(uiZoomPercent + delta);
+    applyZoom();
+}
+
+function resetZoom() {
+    uiZoomPercent = 100;
+    applyZoom();
+}
+
 // initialize button state
 updateGridToggleButton();
+applyZoom();
 
 if (gridToggle) {
     gridToggle.addEventListener('click', () => {
@@ -199,6 +242,28 @@ function snap(val) {
     return isGridSnap ? Math.round(val / 25) * 25 : val;
 }
 
+document.addEventListener('keydown', (event) => {
+    const hasShortcutModifier = event.metaKey || event.ctrlKey;
+    if (!hasShortcutModifier || event.altKey) return;
+
+    if (event.key === '+' || event.key === '=' || event.key === 'Add') {
+        event.preventDefault();
+        changeZoom(10);
+        return;
+    }
+
+    if (event.key === '-' || event.key === '_' || event.key === 'Subtract') {
+        event.preventDefault();
+        changeZoom(-10);
+        return;
+    }
+
+    if (event.key === '0') {
+        event.preventDefault();
+        resetZoom();
+    }
+});
+
 // カラーオプション (M3-like Container Colors)
 const COLORS = [
     { name: 'yellow', hex: '#F9E264' },
@@ -211,8 +276,24 @@ const COLORS = [
 // デフォルトカラー読み込み
 let defaultNoteColor = localStorage.getItem('defaultNoteColor') || 'yellow';
 
+function cloneKanbanColumns(columns) {
+    return columns.map(col => ({ ...col }));
+}
+
+function cloneDefaultKanbanMiddleColumns() {
+    return cloneKanbanColumns(DEFAULT_KANBAN_MIDDLE_COLUMNS);
+}
+
+function buildKanbanColumns(middleColumns = cloneDefaultKanbanMiddleColumns()) {
+    return [
+        { ...DEFAULT_KANBAN_TODO_COLUMN },
+        ...cloneKanbanColumns(Array.isArray(middleColumns) ? middleColumns : []),
+        { ...DEFAULT_KANBAN_DONE_COLUMN }
+    ];
+}
+
 function cloneDefaultKanbanColumns() {
-    return DEFAULT_KANBAN_COLUMNS.map(col => ({ ...col }));
+    return cloneKanbanColumns(DEFAULT_KANBAN_COLUMNS);
 }
 
 function normalizeKanbanColumns(columns) {
@@ -220,22 +301,85 @@ function normalizeKanbanColumns(columns) {
         return cloneDefaultKanbanColumns();
     }
 
-    const normalized = [];
-    const usedIds = new Set();
+    const sourceColumns = columns
+        .map(rawCol => rawCol && typeof rawCol === 'object' ? rawCol : null)
+        .filter(Boolean);
 
-    for (const rawCol of columns) {
+    if (sourceColumns.length === 0) {
+        return cloneDefaultKanbanColumns();
+    }
+
+    const hasFixedEdges =
+        sourceColumns.length >= 2
+        && sourceColumns[0].id === DEFAULT_KANBAN_TODO_COLUMN.id
+        && sourceColumns[sourceColumns.length - 1].id === DEFAULT_KANBAN_DONE_COLUMN.id;
+
+    const middleSources = hasFixedEdges
+        ? sourceColumns.slice(1, -1)
+        : sourceColumns.filter(source => source.id !== DEFAULT_KANBAN_TODO_COLUMN.id && source.id !== DEFAULT_KANBAN_DONE_COLUMN.id);
+
+    const normalizedMiddle = [];
+    const usedIds = new Set([DEFAULT_KANBAN_TODO_COLUMN.id, DEFAULT_KANBAN_DONE_COLUMN.id]);
+
+    for (const rawCol of middleSources) {
         const source = rawCol && typeof rawCol === 'object' ? rawCol : {};
-        const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : 'Untitled';
+        const name = typeof source.name === 'string' && source.name.trim()
+            ? source.name.trim()
+            : `Step ${normalizedMiddle.length + 1}`;
         let id = typeof source.id === 'string' && source.id.trim() ? source.id.trim() : generateId();
+
+        if (id === DEFAULT_KANBAN_TODO_COLUMN.id || id === DEFAULT_KANBAN_DONE_COLUMN.id) {
+            id = generateId();
+        }
 
         while (usedIds.has(id)) {
             id = generateId();
         }
         usedIds.add(id);
-        normalized.push({ id, name });
+        normalizedMiddle.push({ id, name });
     }
 
-    return normalized.length > 0 ? normalized : cloneDefaultKanbanColumns();
+    return buildKanbanColumns(normalizedMiddle);
+}
+
+function getKanbanMiddleColumns(columns) {
+    return normalizeKanbanColumns(columns).slice(1, -1);
+}
+
+function createKanbanMiddleColumn(name = '') {
+    return {
+        id: generateId(),
+        name
+    };
+}
+
+function getKanbanColumnRole(index, totalColumns) {
+    if (index === 0) return 'todo';
+    if (index === totalColumns - 1) return 'done';
+    return 'progress';
+}
+
+function getReassignedKanbanColumnId(previousColumns, removedIndex, nextColumnIdSet) {
+    for (let index = removedIndex - 1; index >= 0; index -= 1) {
+        const candidate = previousColumns[index];
+        if (candidate && nextColumnIdSet.has(candidate.id)) {
+            return candidate.id;
+        }
+    }
+
+    return previousColumns[0]?.id || DEFAULT_KANBAN_TODO_COLUMN.id;
+}
+
+function getKanbanColumnReassignmentMap(previousColumns, nextColumns) {
+    const nextColumnIdSet = new Set(nextColumns.map(column => column.id));
+    const reassignmentMap = new Map();
+
+    previousColumns.forEach((column, index) => {
+        if (nextColumnIdSet.has(column.id)) return;
+        reassignmentMap.set(column.id, getReassignedKanbanColumnId(previousColumns, index, nextColumnIdSet));
+    });
+
+    return reassignmentMap;
 }
 
 function normalizeGroupSchema(group) {
@@ -278,6 +422,7 @@ function normalizeBackupPayload(payload) {
         note.id = typeof note.id === 'string' && note.id.trim() ? note.id.trim() : generateId();
         note.groupId = typeof note.groupId === 'string' && groupMap.has(note.groupId) ? note.groupId : fallbackGroup.id;
         note.type = note.type === 'image' ? 'image' : 'text';
+        note.title = normalizeNoteTitle(note.title);
         note.content = typeof note.content === 'string' ? note.content : '';
         note.x = Number.isFinite(note.x) ? note.x : 10;
         note.y = Number.isFinite(note.y) ? note.y : 10;
@@ -304,6 +449,10 @@ function normalizeBackupPayload(payload) {
     });
 
     return { notes: normalizedNotes, groups: normalizedGroups };
+}
+
+function normalizeNoteTitle(title) {
+    return typeof title === 'string' ? title.trim() : '';
 }
 
 // IndexedDB 初期化
@@ -455,6 +604,29 @@ async function updateNoteDB(note) {
         tx.onerror = () => rej(tx.error);
     });
 }
+
+async function updateNotesBatchDB(notesToUpdate) {
+    const uniqueNotes = Array.from(new Map(notesToUpdate.map(note => [note.id, note])).values());
+    if (uniqueNotes.length === 0) return;
+
+    const normalizedNotes = normalizeBackupPayload({ notes: uniqueNotes, groups }).notes;
+    const db = await dbPromise;
+    const tx = db.transaction('notes', 'readwrite');
+    const store = tx.objectStore('notes');
+
+    normalizedNotes.forEach(note => {
+        store.put(note);
+    });
+
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
+}
+
 async function deleteNoteDB(id) {
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
@@ -612,13 +784,15 @@ let groupModalInstance = null;
  * グループ名入力用のモーダルを表示する
  * @param {string} title モダールのタイトル
  * @param {string} defaultValue デフォルトの入力値
+ * @param {{ allowEmpty?: boolean, placeholder?: string }} options 入力オプション
  * @returns {Promise<string|null>} 保存された名前、またはキャンセル時は null
  */
-function showGroupModal(title, defaultValue = '') {
+function showGroupModal(title, defaultValue = '', options = {}) {
     const modalEl = document.getElementById('groupModal');
     const titleEl = document.getElementById('groupModalTitle');
     const inputEl = document.getElementById('group-name-input');
     const saveBtn = document.getElementById('group-modal-save');
+    const { allowEmpty = false, placeholder = 'Enter name...' } = options;
 
     if (!groupModalInstance) {
         groupModalInstance = new bootstrap.Modal(modalEl);
@@ -626,11 +800,12 @@ function showGroupModal(title, defaultValue = '') {
 
     titleEl.textContent = title;
     inputEl.value = defaultValue;
+    inputEl.placeholder = placeholder;
 
     return new Promise((resolve) => {
         const handleSave = () => {
             const name = inputEl.value.trim();
-            if (name) {
+            if (allowEmpty || name) {
                 cleanup();
                 groupModalInstance.hide();
                 resolve(name);
@@ -665,6 +840,232 @@ function showGroupModal(title, defaultValue = '') {
             inputEl.select();
         }, { once: true });
     });
+}
+
+let kanbanColumnsModalInstance = null;
+
+function showKanbanColumnsModal(group) {
+    const modalEl = document.getElementById('kanbanColumnsModal');
+    const editorEl = document.getElementById('kanban-columns-editor');
+    const addBtn = document.getElementById('add-kanban-step-button');
+    const saveBtn = document.getElementById('kanban-columns-modal-save');
+    const middleColumns = getKanbanMiddleColumns(group.kanbanColumns).map(column => ({ ...column }));
+
+    if (!kanbanColumnsModalInstance) {
+        kanbanColumnsModalInstance = new bootstrap.Modal(modalEl);
+    }
+
+    return new Promise((resolve) => {
+        const focusLastInput = () => {
+            const inputs = editorEl.querySelectorAll('.kanban-step-input');
+            const lastInput = inputs[inputs.length - 1];
+            if (lastInput) {
+                lastInput.focus();
+                lastInput.select();
+            }
+        };
+
+        const renderEditor = () => {
+            editorEl.innerHTML = '';
+
+            if (middleColumns.length === 0) {
+                const emptyEl = document.createElement('p');
+                emptyEl.className = 'kanban-step-empty';
+                emptyEl.textContent = '中間ステップなし。ToDo から Done へ直接移動します。';
+                editorEl.appendChild(emptyEl);
+                return;
+            }
+
+            middleColumns.forEach((column, index) => {
+                const rowEl = document.createElement('div');
+                rowEl.className = 'kanban-step-row';
+
+                const inputEl = document.createElement('input');
+                inputEl.type = 'text';
+                inputEl.className = 'form-control m3-input kanban-step-input';
+                inputEl.value = column.name;
+                inputEl.placeholder = `Step ${index + 1}`;
+                inputEl.addEventListener('input', () => {
+                    column.name = inputEl.value;
+                });
+
+                const removeBtn = document.createElement('button');
+                removeBtn.type = 'button';
+                removeBtn.className = 'btn btn-sm m3-button-tonal';
+                removeBtn.textContent = 'Remove';
+                removeBtn.addEventListener('click', () => {
+                    middleColumns.splice(index, 1);
+                    renderEditor();
+                });
+
+                rowEl.appendChild(inputEl);
+                rowEl.appendChild(removeBtn);
+                editorEl.appendChild(rowEl);
+            });
+        };
+
+        const cleanup = () => {
+            addBtn.removeEventListener('click', handleAdd);
+            saveBtn.removeEventListener('click', handleSave);
+            modalEl.removeEventListener('hidden.bs.modal', handleCancel);
+        };
+
+        const handleAdd = () => {
+            middleColumns.push(createKanbanMiddleColumn(`Step ${middleColumns.length + 1}`));
+            renderEditor();
+            window.requestAnimationFrame(focusLastInput);
+        };
+
+        const handleSave = () => {
+            const nextMiddleColumns = middleColumns.map((column, index) => ({
+                id: typeof column.id === 'string' && column.id.trim() ? column.id.trim() : generateId(),
+                name: typeof column.name === 'string' && column.name.trim() ? column.name.trim() : `Step ${index + 1}`
+            }));
+
+            cleanup();
+            kanbanColumnsModalInstance.hide();
+            resolve(buildKanbanColumns(nextMiddleColumns));
+        };
+
+        const handleCancel = () => {
+            cleanup();
+            resolve(null);
+        };
+
+        addBtn.addEventListener('click', handleAdd);
+        saveBtn.addEventListener('click', handleSave);
+        modalEl.addEventListener('hidden.bs.modal', handleCancel);
+
+        renderEditor();
+        kanbanColumnsModalInstance.show();
+    });
+}
+
+function normalizeKanbanOrderIndexes(groupId) {
+    const groupNotes = notes.filter(note => note.groupId === groupId && !isKanbanFreeCanvasNote(note));
+    const groupedNotes = new Map();
+    const changedNotes = [];
+
+    groupNotes.forEach(note => {
+        const columnNotes = groupedNotes.get(note.kanbanColumnId) || [];
+        columnNotes.push(note);
+        groupedNotes.set(note.kanbanColumnId, columnNotes);
+    });
+
+    groupedNotes.forEach(columnNotes => {
+        columnNotes
+            .sort((a, b) => (a.kanbanOrder || 0) - (b.kanbanOrder || 0))
+            .forEach((note, index) => {
+                if (note.kanbanOrder !== index) {
+                    note.kanbanOrder = index;
+                    changedNotes.push(note);
+                }
+            });
+    });
+
+    return changedNotes;
+}
+
+async function updateGroupKanbanColumns(group, nextColumns) {
+    const previousColumns = normalizeKanbanColumns(group.kanbanColumns);
+    const normalizedNextColumns = normalizeKanbanColumns(nextColumns);
+    const reassignmentMap = getKanbanColumnReassignmentMap(previousColumns, normalizedNextColumns);
+    const nextColumnIdSet = new Set(normalizedNextColumns.map(column => column.id));
+    const nextOrderByColumn = new Map(normalizedNextColumns.map(column => [column.id, 0]));
+    const changedNotes = [];
+
+    notes
+        .filter(note => note.groupId === group.id && !isKanbanFreeCanvasNote(note))
+        .forEach(note => {
+            if (nextColumnIdSet.has(note.kanbanColumnId) && !reassignmentMap.has(note.kanbanColumnId)) {
+                const nextOrder = Math.max(nextOrderByColumn.get(note.kanbanColumnId) || 0, (note.kanbanOrder || 0) + 1);
+                nextOrderByColumn.set(note.kanbanColumnId, nextOrder);
+            }
+        });
+
+    group.kanbanColumns = normalizedNextColumns;
+    await updateGroupDB(group);
+
+    notes
+        .filter(note => note.groupId === group.id && !isKanbanFreeCanvasNote(note))
+        .forEach(note => {
+            const fallbackColumnId = reassignmentMap.get(note.kanbanColumnId);
+            const targetColumnId = fallbackColumnId || (nextColumnIdSet.has(note.kanbanColumnId) ? note.kanbanColumnId : normalizedNextColumns[0].id);
+
+            if (note.kanbanColumnId !== targetColumnId) {
+                note.kanbanColumnId = targetColumnId;
+                note.kanbanOrder = nextOrderByColumn.get(targetColumnId) || 0;
+                nextOrderByColumn.set(targetColumnId, note.kanbanOrder + 1);
+                changedNotes.push(note);
+            }
+        });
+
+    await updateNotesBatchDB([...changedNotes, ...normalizeKanbanOrderIndexes(group.id)]);
+}
+
+async function editGroupKanbanColumns(groupId) {
+    const group = groups.find(candidate => candidate.id === groupId);
+    if (!group) return;
+
+    const previousColumns = normalizeKanbanColumns(group.kanbanColumns);
+    const nextColumns = await showKanbanColumnsModal(group);
+    if (!nextColumns) return;
+
+    const normalizedNextColumns = normalizeKanbanColumns(nextColumns);
+    if (JSON.stringify(previousColumns) === JSON.stringify(normalizedNextColumns)) {
+        return;
+    }
+
+    await updateGroupKanbanColumns(group, normalizedNextColumns);
+
+    if (group.id === currentGroupId) {
+        renderWorkspace();
+    }
+
+    showToast('Kanban steps updated');
+}
+
+async function editNoteTitle(note) {
+    const currentTitle = normalizeNoteTitle(note.title);
+    const nextTitle = await showGroupModal('Edit Note Title', currentTitle, {
+        allowEmpty: true,
+        placeholder: 'Leave blank to show number only'
+    });
+
+    if (nextTitle === null) return;
+
+    const normalizedTitle = normalizeNoteTitle(nextTitle);
+    if (normalizedTitle === currentTitle) return;
+
+    note.title = normalizedTitle;
+    await updateNoteDB(note);
+    renderWorkspace();
+    await assignNoteIds();
+}
+
+function createNoteTitleElement(note) {
+    const titleEl = document.createElement('span');
+    const title = normalizeNoteTitle(note.title);
+
+    titleEl.className = 'note-title';
+    if (!title) {
+        titleEl.classList.add('is-empty');
+    }
+
+    titleEl.textContent = title;
+    titleEl.title = title || 'Double click to add a title';
+
+    titleEl.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+    });
+
+    titleEl.addEventListener('dblclick', async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        await editNoteTitle(note);
+    });
+
+    return titleEl;
 }
 
 async function loadGroups() {
@@ -705,6 +1106,16 @@ function renderGroups() {
 
         const actionsEl = document.createElement('div');
         actionsEl.className = 'group-actions';
+
+        const columnsBtn = document.createElement('button');
+        columnsBtn.className = 'group-action-btn material-symbols-outlined';
+        columnsBtn.textContent = 'tune';
+        columnsBtn.title = 'Customize kanban steps';
+        columnsBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await editGroupKanbanColumns(group.id);
+        });
+        actionsEl.appendChild(columnsBtn);
 
         const modeBtn = document.createElement('button');
         modeBtn.className = 'group-action-btn material-symbols-outlined';
@@ -812,11 +1223,13 @@ function renderKanbanBoard() {
 
     const boardEl = document.createElement('div');
     boardEl.className = 'kanban-board';
+    boardEl.style.setProperty('--kanban-column-count', String(columns.length));
 
-    for (const column of columns) {
+    columns.forEach((column, index) => {
         const columnEl = document.createElement('section');
         columnEl.className = 'kanban-column';
         columnEl.dataset.columnId = column.id;
+        columnEl.dataset.columnRole = getKanbanColumnRole(index, columns.length);
 
         const headerEl = document.createElement('div');
         headerEl.className = 'kanban-column-header';
@@ -856,7 +1269,7 @@ function renderKanbanBoard() {
         columnEl.appendChild(headerEl);
         columnEl.appendChild(bodyEl);
         boardEl.appendChild(columnEl);
-    }
+    });
 
     workspace.appendChild(boardEl);
 
@@ -882,8 +1295,8 @@ function renderKanbanBoard() {
         const rect = workspace.getBoundingClientRect();
         const baseWidth = Number.isFinite(note.width) ? note.width : 250;
         const baseHeight = Number.isFinite(note.height) ? note.height : 200;
-        const rawX = e.clientX - rect.left + workspace.scrollLeft - (baseWidth / 2);
-        const rawY = e.clientY - rect.top + workspace.scrollTop - 18;
+        const rawX = convertViewportDeltaToWorkspace(e.clientX - rect.left) + workspace.scrollLeft - (baseWidth / 2);
+        const rawY = convertViewportDeltaToWorkspace(e.clientY - rect.top) + workspace.scrollTop - 18;
 
         note.kanbanColumnId = KANBAN_FREE_CANVAS_ID;
         note.x = snap(Math.max(0, rawX));
@@ -924,10 +1337,15 @@ function renderKanbanCard(note) {
     const headerEl = document.createElement('div');
     headerEl.className = 'kanban-card-header';
 
+    const headerMainEl = document.createElement('div');
+    headerMainEl.className = 'note-header-main';
+
     const idEl = document.createElement('span');
     idEl.className = 'note-id';
     idEl.textContent = note.keyId || '';
     idEl.title = 'ショートカットキー';
+
+    const titleEl = createNoteTitleElement(note);
 
     const actionsEl = document.createElement('div');
     actionsEl.className = 'kanban-card-actions';
@@ -956,10 +1374,11 @@ function renderKanbanCard(note) {
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'btn';
+    copyBtn.dataset.action = 'copy';
     copyBtn.innerHTML = '<span class="material-symbols-outlined">content_copy</span>';
     copyBtn.title = 'コピー';
     copyBtn.addEventListener('click', async () => {
-        await handleCopy(note);
+        await handleCopy(note, copyBtn);
     });
 
     const deleteBtn = document.createElement('button');
@@ -979,7 +1398,9 @@ function renderKanbanCard(note) {
     actionsEl.appendChild(colorPanel);
     actionsEl.appendChild(copyBtn);
     actionsEl.appendChild(deleteBtn);
-    headerEl.appendChild(idEl);
+    headerMainEl.appendChild(idEl);
+    headerMainEl.appendChild(titleEl);
+    headerEl.appendChild(headerMainEl);
     headerEl.appendChild(actionsEl);
 
     const contentEl = document.createElement('div');
@@ -1149,24 +1570,21 @@ function showCopyFeedback() {
 }
 
 // アイコンのフィードバック (3秒間チェックマークにする共通関数)
-function showIconFeedback(note) {
+function showIconFeedback(note, copyButton = null) {
     const noteEl = workspace.querySelector(`[data-id='${note.id}']`);
-    if (noteEl) {
-        // header-actions 内の最初のボタン（コピーボタン）を取得
-        const copyBtn = noteEl.querySelector('.header-actions .btn');
-        const iconSpan = copyBtn ? copyBtn.querySelector('.material-symbols-outlined') : null;
-        if (iconSpan) {
-            const originalIcon = iconSpan.textContent;
-            iconSpan.textContent = 'check';
-            setTimeout(() => {
-                iconSpan.textContent = originalIcon;
-            }, 3000);
-        }
+    const resolvedCopyButton = copyButton || (noteEl ? noteEl.querySelector("button[data-action='copy']") : null);
+    const iconSpan = resolvedCopyButton ? resolvedCopyButton.querySelector('.material-symbols-outlined') : null;
+    if (iconSpan) {
+        const originalIcon = iconSpan.textContent;
+        iconSpan.textContent = 'check';
+        setTimeout(() => {
+            iconSpan.textContent = originalIcon;
+        }, 3000);
     }
 }
 
 // ノートをコピーする共通関数
-async function handleCopy(note) {
+async function handleCopy(note, copyButton = null) {
     if (note.type === 'text') {
         await navigator.clipboard.writeText(note.content);
     } else if (note.type === 'image') {
@@ -1180,7 +1598,7 @@ async function handleCopy(note) {
         }
     }
     showCopyFeedback();
-    showIconFeedback(note);
+    showIconFeedback(note, copyButton);
 }
 
 // テキストに合わせてノートの高さを自動調整する関数
@@ -1261,6 +1679,9 @@ function renderNote(note) {
     const header = document.createElement('div');
     header.className = 'note-header';
 
+    const headerMain = document.createElement('div');
+    headerMain.className = 'note-header-main';
+
     // ID Container
     const idContainer = document.createElement('div');
     idContainer.className = 'note-id-container';
@@ -1269,7 +1690,12 @@ function renderNote(note) {
     idLabel.textContent = note.keyId || '';
     idLabel.title = 'ショートカットキー';
     idContainer.appendChild(idLabel);
-    header.appendChild(idContainer);
+
+    const titleEl = createNoteTitleElement(note);
+
+    headerMain.appendChild(idContainer);
+    headerMain.appendChild(titleEl);
+    header.appendChild(headerMain);
 
     // Right-aligned container for colors and buttons
     const headerRight = document.createElement('div');
@@ -1328,6 +1754,7 @@ function renderNote(note) {
     // copy button
     const copyBtn = document.createElement('button');
     copyBtn.className = 'btn';
+    copyBtn.dataset.action = 'copy';
     copyBtn.innerHTML = '<span class="material-symbols-outlined">content_copy</span>';
     copyBtn.title = 'コピー';
 
@@ -1407,15 +1834,15 @@ function renderNote(note) {
         if (isOnNativeResizeHandle(e)) return;
         isDragging = true;
         const noteRect = noteEl.getBoundingClientRect();
-        offsetX = e.clientX - noteRect.left;
-        offsetY = e.clientY - noteRect.top;
+        offsetX = convertViewportDeltaToWorkspace(e.clientX - noteRect.left);
+        offsetY = convertViewportDeltaToWorkspace(e.clientY - noteRect.top);
     });
 
     document.addEventListener('mousemove', e => {
         if (!isDragging) return;
         const workspaceRect = workspace.getBoundingClientRect();
-        const rawX = e.clientX - workspaceRect.left + workspace.scrollLeft - offsetX;
-        const rawY = e.clientY - workspaceRect.top + workspace.scrollTop - offsetY;
+        const rawX = convertViewportDeltaToWorkspace(e.clientX - workspaceRect.left) + workspace.scrollLeft - offsetX;
+        const rawY = convertViewportDeltaToWorkspace(e.clientY - workspaceRect.top) + workspace.scrollTop - offsetY;
         noteEl.style.left = snap(rawX) + 'px';
         noteEl.style.top = snap(rawY) + 'px';
 
@@ -1497,8 +1924,8 @@ function renderNote(note) {
             // 外側の幅・高さを取得（padding/borderを含む）
             // 整数値に丸めることで、微細な端数によるループ保存やリサイズ誤差を防ぐ
             const rect = noteEl.getBoundingClientRect();
-            const width = Math.round(rect.width);
-            const height = Math.round(rect.height);
+            const width = Math.round(convertViewportDeltaToWorkspace(rect.width));
+            const height = Math.round(convertViewportDeltaToWorkspace(rect.height));
             const id = noteEl.dataset.id;
             const idx = notes.findIndex(n => n.id === id);
             if (idx > -1) {
@@ -1516,7 +1943,7 @@ function renderNote(note) {
 
     // copy
     copyBtn.addEventListener('click', async () => {
-        await handleCopy(note);
+        await handleCopy(note, copyBtn);
     });
 
     // delete
@@ -1577,6 +2004,7 @@ async function createNewNote(text, x = snap(10), y = snap(10), targetColumnId = 
         id: generateId(),
         groupId: currentGroupId,
         type: 'text',
+        title: '',
         content: text,
         x: x,
         y: y,
@@ -1630,8 +2058,8 @@ workspace.addEventListener('dblclick', async (e) => {
         if (e.target.closest('.kanban-card') || e.target.closest('.note')) return;
 
         const rect = workspace.getBoundingClientRect();
-        const x = snap(e.clientX - rect.left + workspace.scrollLeft);
-        const y = snap(e.clientY - rect.top + workspace.scrollTop);
+        const x = snap(convertViewportDeltaToWorkspace(e.clientX - rect.left) + workspace.scrollLeft);
+        const y = snap(convertViewportDeltaToWorkspace(e.clientY - rect.top) + workspace.scrollTop);
 
         await createNewNote('New Note', x, y, KANBAN_FREE_CANVAS_ID);
 
@@ -1947,6 +2375,9 @@ workspace.addEventListener('mouseleave', () => {
     // UI events for settings
     const settingsBtn = document.getElementById('settings-button');
     const helpBtn = document.getElementById('help-button');
+    const zoomOutBtn = document.getElementById('zoom-out-button');
+    const zoomResetBtn = document.getElementById('zoom-reset-button');
+    const zoomInBtn = document.getElementById('zoom-in-button');
     const changeStorageBtn = document.getElementById('change-storage-button');
     const exportBtn = document.getElementById('export-button');
     const importInput = document.getElementById('import-input');
@@ -1991,6 +2422,18 @@ workspace.addEventListener('mouseleave', () => {
     const alignBtn = document.getElementById('align-notes');
     if (alignBtn) {
         alignBtn.addEventListener('click', alignNotes);
+    }
+
+    if (zoomOutBtn) {
+        zoomOutBtn.addEventListener('click', () => changeZoom(-10));
+    }
+
+    if (zoomResetBtn) {
+        zoomResetBtn.addEventListener('click', resetZoom);
+    }
+
+    if (zoomInBtn) {
+        zoomInBtn.addEventListener('click', () => changeZoom(10));
     }
 
     if (changeStorageBtn) {

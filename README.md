@@ -11,6 +11,7 @@ A temporary copy-and-paste sticky-note web application (PWA-enabled) with native
 - Move and resize notes freely like sticky notes
 - **Multi-Device Sync**: Sync notes via external folders (e.g., Dropbox, iCloud) with real-time file watching
 - **Group Management**: Organize notes into separate groups using the sidebar
+- **Custom Kanban Steps**: Keep ToDo/Done fixed while renaming or adding intermediate stages per group
 - **Align Notes**: Automatically layout notes in a grid while preserving their original sizes
 - **Grid Snap**: Toggle grid snapping for organized manual placement
 - **Visual Hints**: Canvas hint "Double-click to create a note" on empty workspace
@@ -51,7 +52,8 @@ You can download the latest pre-built application from the [GitHub Releases](htt
 6. Click the trash icon on a note to delete it, or use the **Clear All** button to remove all notes
 7. Toggle **Grid Snap** in the navbar to align notes to a 25px grid
 8. Toggle dark/light mode using the switch in the navbar
-9. Notes and their positions are stored in IndexedDB (`memable-db`) and persist after reloads
+9. In the sidebar, click the tune icon on a group to customize the Kanban steps between ToDo and Done
+10. Notes and their positions are stored in IndexedDB (`memable-db`) and persist after reloads
 
 ## Desktop Application via Electron
 

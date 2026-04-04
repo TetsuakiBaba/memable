@@ -11,6 +11,7 @@
     --m3-on-error: #ffffff;
     --m3-elevation-1: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 1px 3px 1px rgba(0, 0, 0, 0.1);
     --m3-elevation-2: 0 2px 6px 2px rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+    --ui-zoom-scale: 1;
 }
 
 [data-bs-theme="dark"] {
@@ -30,6 +31,7 @@ body {
     background-color: var(--m3-surface);
     color: var(--m3-on-surface);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: calc(100vh / var(--ui-zoom-scale));
     transition: background-color 0.3s, color 0.3s;
 }
 
@@ -47,6 +49,12 @@ body {
 .navbar-brand {
     font-weight: 600;
     letter-spacing: -0.5px;
+}
+
+.zoom-level-label {
+    min-width: 3.5rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
 }
 
 /* Material Design 3 Buttons */
@@ -127,7 +135,7 @@ body {
 }
 
 #main-layout {
-    height: calc(100vh - 60px);
+    height: calc((100vh / var(--ui-zoom-scale)) - 60px);
     overflow: hidden;
     position: relative;
     z-index: 1;
@@ -232,11 +240,44 @@ body {
 }
 
 .group-action-btn.mode-kanban {
-    color: var(--m3-primary);
+    color: inherit;
 }
 
 .group-action-btn:hover {
     background-color: rgba(0, 0, 0, 0.1);
+}
+
+.kanban-fixed-stage {
+    display: flex;
+    align-items: center;
+}
+
+.kanban-fixed-stage-label {
+    display: inline-flex;
+    align-items: center;
+    min-height: 42px;
+    width: 100%;
+    padding: 0 12px;
+    border-radius: 12px;
+    background: var(--m3-secondary-container);
+    color: var(--m3-on-secondary-container);
+    font-weight: 600;
+}
+
+.kanban-step-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.kanban-step-empty {
+    margin: 0;
+    padding: 12px;
+    border: 1px dashed var(--m3-outline);
+    border-radius: 12px;
+    color: color-mix(in srgb, var(--m3-on-surface) 65%, transparent);
+    text-align: center;
 }
 
 #workspace {
@@ -259,15 +300,17 @@ body {
 }
 
 .kanban-board {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(var(--kanban-column-count, 3), minmax(0, 1fr));
     gap: 12px;
+    width: 100%;
     min-height: 100%;
     align-items: flex-start;
 }
 
 .kanban-column {
-    min-width: 280px;
-    width: 300px;
+    min-width: 0;
+    width: auto;
     background: var(--m3-surface-container);
     border: 1px solid var(--m3-outline);
     border-radius: 14px;
@@ -278,17 +321,20 @@ body {
     overflow: hidden;
 }
 
-.kanban-column[data-column-id='todo'] {
+.kanban-column[data-column-id='todo'],
+.kanban-column[data-column-role='todo'] {
     border-color: #7c4d00;
     background: #fff6dd;
 }
 
-.kanban-column[data-column-id='doing'] {
+.kanban-column[data-column-id='doing'],
+.kanban-column[data-column-role='progress'] {
     border-color: #0b5394;
     background: #e8f2ff;
 }
 
-.kanban-column[data-column-id='done'] {
+.kanban-column[data-column-id='done'],
+.kanban-column[data-column-role='done'] {
     border-color: #0f6b3d;
     background: #e9f8ef;
 }
@@ -301,15 +347,18 @@ body {
     border-top-right-radius: 14px;
 }
 
-.kanban-column[data-column-id='todo'] .kanban-column-header {
+.kanban-column[data-column-id='todo'] .kanban-column-header,
+.kanban-column[data-column-role='todo'] .kanban-column-header {
     background: #ffe8aa;
 }
 
-.kanban-column[data-column-id='doing'] .kanban-column-header {
+.kanban-column[data-column-id='doing'] .kanban-column-header,
+.kanban-column[data-column-role='progress'] .kanban-column-header {
     background: #cfe5ff;
 }
 
-.kanban-column[data-column-id='done'] .kanban-column-header {
+.kanban-column[data-column-id='done'] .kanban-column-header,
+.kanban-column[data-column-role='done'] .kanban-column-header {
     background: #cdeed8;
 }
 
@@ -392,8 +441,8 @@ body.kanban-drop-copy-cursor * {
 
 @media (max-width: 900px) {
     .kanban-column {
-        min-width: 240px;
-        width: 240px;
+        min-width: 0;
+        width: auto;
     }
 }
 
@@ -475,12 +524,42 @@ body.kanban-drop-copy-cursor * {
     cursor: grabbing;
 }
 
+.note-header-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+}
+
 .note-id-container {
     display: flex;
     align-items: center;
     height: 32px;
     /* Match button height for better centering */
     flex-shrink: 0;
+}
+
+.note-title {
+    min-width: 0;
+    flex: 1;
+    font-size: 0.9rem;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-radius: 6px;
+    padding: 4px 6px;
+    cursor: text;
+}
+
+.note-title:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+.note-title.is-empty {
+    min-width: 48px;
 }
 
 .note-content {
@@ -547,8 +626,8 @@ body.kanban-drop-copy-cursor * {
     position: fixed;
     top: 0;
     left: 0;
-    width: 100%;
-    height: 100%;
+    width: calc(100vw / var(--ui-zoom-scale));
+    height: calc(100vh / var(--ui-zoom-scale));
     display: none;
     z-index: 1000;
     /* テキストエリアと同じ見た目 */
@@ -629,10 +708,14 @@ body.kanban-drop-copy-cursor * {
 
 /* Modals should always be on top of notes */
 .modal {
+    width: calc(100vw / var(--ui-zoom-scale));
+    height: calc(100vh / var(--ui-zoom-scale));
     z-index: 10000 !important;
 }
 
 .modal-backdrop {
+    width: calc(100vw / var(--ui-zoom-scale));
+    height: calc(100vh / var(--ui-zoom-scale));
     z-index: 9999 !important;
 }
 
