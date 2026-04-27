@@ -612,6 +612,8 @@ body.kanban-drop-copy-cursor * {
     right: .3rem;
     font-size: .65rem;
     color: rgba(0, 0, 0, 0.4);
+    white-space: nowrap;
+    pointer-events: none;
 }
 
 /* テキストエリアに画像をドラッグした際のドロップゾーン表示 */
