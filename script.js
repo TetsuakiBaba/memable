@@ -15,6 +15,8 @@ const DEFAULT_KANBAN_MIDDLE_COLUMNS = [
 ];
 const DEFAULT_KANBAN_COLUMNS = buildKanbanColumns(DEFAULT_KANBAN_MIDDLE_COLUMNS);
 const KANBAN_FREE_CANVAS_ID = '__kanban_free_canvas__';
+const DEFAULT_TEXT_NOTE_WIDTH = 375;
+const DEFAULT_TEXT_NOTE_HEIGHT = 200;
 
 // --- Undo Logic ---
 let lastDeletedNote = null;
@@ -205,6 +207,19 @@ function updateZoomUI() {
     if (zoomLevelLabel) {
         zoomLevelLabel.textContent = `${uiZoomPercent}%`;
     }
+}
+
+function countCharacters(text = '') {
+    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+        return Array.from(new Intl.Segmenter('ja', { granularity: 'grapheme' }).segment(text)).length;
+    }
+    return Array.from(text).length;
+}
+
+function formatNoteSize(content = '') {
+    const characterCount = countCharacters(content);
+    const byteCount = new Blob([content]).size;
+    return `${characterCount} chars / ${byteCount} bytes`;
 }
 
 function applyZoom() {
@@ -1793,7 +1808,7 @@ function renderNote(note) {
     // size indicator
     const sizeEl = document.createElement('span');
     sizeEl.className = 'note-size';
-    sizeEl.textContent = `${new Blob([note.content]).size} bytes`;
+    sizeEl.textContent = formatNoteSize(note.content);
     noteEl.appendChild(sizeEl);
 
     workspace.appendChild(noteEl);
@@ -1969,7 +1984,7 @@ function renderNote(note) {
 
             // update size display
             const sizeEl = noteEl.querySelector('.note-size');
-            if (sizeEl) sizeEl.textContent = `${new Blob([note.content]).size} bytes`;
+            if (sizeEl) sizeEl.textContent = formatNoteSize(note.content);
         });
 
         content.addEventListener('blur', async () => {
@@ -2008,8 +2023,8 @@ async function createNewNote(text, x = snap(10), y = snap(10), targetColumnId = 
         content: text,
         x: x,
         y: y,
-        width: 250,
-        height: 200,
+        width: DEFAULT_TEXT_NOTE_WIDTH,
+        height: DEFAULT_TEXT_NOTE_HEIGHT,
         color: defaultNoteColor,
         zIndex: maxZIndex++, // 新規作成時も zIndex を保存
         kanbanColumnId: defaultColumnId,
