@@ -222,6 +222,46 @@ function formatNoteSize(content = '') {
     return `${characterCount} chars / ${byteCount} bytes`;
 }
 
+const EDITABLE_BLOCK_TAG_NAMES = new Set([
+    'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DIV', 'DL', 'FIELDSET',
+    'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5',
+    'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION',
+    'TABLE', 'UL'
+]);
+
+function getEditablePlainText(element) {
+    let text = '';
+
+    const appendNewline = () => {
+        if (!text.endsWith('\n')) text += '\n';
+    };
+
+    const walk = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+            text += node.nodeValue.replace(/\r\n?/g, '\n');
+            return;
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+        const tagName = node.tagName;
+        if (tagName === 'BR') {
+            text += '\n';
+            return;
+        }
+
+        const isBlock = node !== element && EDITABLE_BLOCK_TAG_NAMES.has(tagName);
+        if (isBlock && text && !text.endsWith('\n')) appendNewline();
+
+        node.childNodes.forEach(walk);
+
+        if (isBlock && text) appendNewline();
+    };
+
+    element.childNodes.forEach(walk);
+    return text.replace(/\u00a0/g, ' ').replace(/\n$/, '');
+}
+
 function applyZoom() {
     uiZoomPercent = clampZoomPercent(uiZoomPercent);
     const zoomScale = getZoomScale();
@@ -1425,7 +1465,7 @@ function renderKanbanCard(note) {
         contentEl.spellcheck = false;
         contentEl.textContent = note.content;
         contentEl.addEventListener('blur', async () => {
-            note.content = contentEl.innerText;
+            note.content = getEditablePlainText(contentEl);
             await updateNoteDB(note);
         });
     } else {
@@ -1979,7 +2019,7 @@ function renderNote(note) {
     // edit logic
     if (note.type === 'text') {
         content.addEventListener('input', () => {
-            note.content = content.innerText;
+            note.content = getEditablePlainText(content);
             autoResizeNote(noteEl, note);
 
             // update size display
@@ -1988,7 +2028,7 @@ function renderNote(note) {
         });
 
         content.addEventListener('blur', async () => {
-            note.content = content.innerText;
+            note.content = getEditablePlainText(content);
             await updateNoteDB(note);
         });
 
