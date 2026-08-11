@@ -17,6 +17,9 @@ const DEFAULT_KANBAN_COLUMNS = buildKanbanColumns(DEFAULT_KANBAN_MIDDLE_COLUMNS)
 const KANBAN_FREE_CANVAS_ID = '__kanban_free_canvas__';
 const DEFAULT_TEXT_NOTE_WIDTH = 375;
 const DEFAULT_TEXT_NOTE_HEIGHT = 200;
+const DEFAULT_SIDEBAR_WIDTH = 200;
+const MIN_SIDEBAR_WIDTH = 160;
+const MAX_SIDEBAR_WIDTH = 480;
 
 // --- Undo Logic ---
 let lastDeletedNote = null;
@@ -201,6 +204,14 @@ function getZoomScale() {
 
 function convertViewportDeltaToWorkspace(delta) {
     return delta / getZoomScale();
+}
+
+function getWorkspacePointFromPointer(event) {
+    const rect = workspace.getBoundingClientRect();
+    return {
+        x: convertViewportDeltaToWorkspace(event.clientX - rect.left) + workspace.scrollLeft,
+        y: convertViewportDeltaToWorkspace(event.clientY - rect.top) + workspace.scrollTop
+    };
 }
 
 function updateZoomUI() {
@@ -443,8 +454,10 @@ function normalizeGroupSchema(group) {
     const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : 'Untitled';
     const viewMode = source.viewMode === 'kanban' ? 'kanban' : 'canvas';
     const kanbanColumns = normalizeKanbanColumns(source.kanbanColumns);
+    const parentId = typeof source.parentId === 'string' && source.parentId.trim() ? source.parentId.trim() : null;
+    const order = Number.isFinite(source.order) ? source.order : Number.MAX_SAFE_INTEGER;
 
-    return { ...source, id, name, viewMode, kanbanColumns };
+    return { ...source, id, name, viewMode, kanbanColumns, parentId, order };
 }
 
 function getDefaultGroup() {
@@ -452,8 +465,50 @@ function getDefaultGroup() {
         id: DEFAULT_GROUP_ID,
         name: 'Default',
         viewMode: 'canvas',
-        kanbanColumns: cloneDefaultKanbanColumns()
+        kanbanColumns: cloneDefaultKanbanColumns(),
+        parentId: null,
+        order: 0
     };
+}
+
+function normalizeGroupHierarchy(groupItems) {
+    const normalized = groupItems.map((group, index) => ({
+        ...normalizeGroupSchema(group),
+        _sourceIndex: index
+    }));
+    const ids = new Set(normalized.map(group => group.id));
+
+    normalized.forEach(group => {
+        if (!group.parentId || group.parentId === group.id || !ids.has(group.parentId)) {
+            group.parentId = null;
+        }
+        const visited = new Set([group.id]);
+        let parentId = group.parentId;
+        while (parentId) {
+            if (visited.has(parentId)) {
+                group.parentId = null;
+                break;
+            }
+            visited.add(parentId);
+            parentId = normalized.find(candidate => candidate.id === parentId)?.parentId || null;
+        }
+    });
+
+    const siblings = new Map();
+    normalized.forEach(group => {
+        const key = group.parentId || '';
+        const list = siblings.get(key) || [];
+        list.push(group);
+        siblings.set(key, list);
+    });
+    siblings.forEach(list => {
+        list.sort((a, b) => a.order - b.order || a._sourceIndex - b._sourceIndex);
+        list.forEach((group, index) => {
+            group.order = index;
+            delete group._sourceIndex;
+        });
+    });
+    return normalized;
 }
 
 function normalizeBackupPayload(payload) {
@@ -461,10 +516,11 @@ function normalizeBackupPayload(payload) {
     const rawNotes = Array.isArray(source.notes) ? source.notes : (Array.isArray(source) ? source : []);
     const rawGroups = Array.isArray(source.groups) ? source.groups : [];
 
-    const normalizedGroups = rawGroups.map(normalizeGroupSchema);
+    let normalizedGroups = normalizeGroupHierarchy(rawGroups);
     if (!normalizedGroups.some(group => group.id === DEFAULT_GROUP_ID)) {
         normalizedGroups.push(getDefaultGroup());
     }
+    normalizedGroups = normalizeGroupHierarchy(normalizedGroups);
 
     const groupMap = new Map(normalizedGroups.map(group => [group.id, group]));
     const fallbackGroup = groupMap.get(DEFAULT_GROUP_ID) || normalizedGroups[0] || getDefaultGroup();
@@ -597,6 +653,20 @@ async function updateGroupDB(group) {
     const db = await dbPromise;
     const tx = db.transaction('groups', 'readwrite');
     tx.objectStore('groups').put(normalizedGroup);
+    return new Promise((res, rej) => {
+        tx.oncomplete = async () => {
+            await syncToExternalIfNeeded();
+            res();
+        };
+        tx.onerror = () => rej(tx.error);
+    });
+}
+
+async function updateGroupsBatchDB(groupItems) {
+    const db = await dbPromise;
+    const tx = db.transaction('groups', 'readwrite');
+    const store = tx.objectStore('groups');
+    groupItems.map(normalizeGroupSchema).forEach(group => store.put(group));
     return new Promise((res, rej) => {
         tx.oncomplete = async () => {
             await syncToExternalIfNeeded();
@@ -1124,7 +1194,7 @@ function createNoteTitleElement(note) {
 }
 
 async function loadGroups() {
-    groups = (await getAllGroupsDB()).map(normalizeGroupSchema);
+    groups = normalizeGroupHierarchy(await getAllGroupsDB());
 
     if (groups.length > 0) {
         const db = await dbPromise;
@@ -1149,10 +1219,50 @@ async function loadGroups() {
 
 function renderGroups() {
     groupList.innerHTML = '';
+    const collapsedGroups = new Set(JSON.parse(localStorage.getItem('collapsedGroups') || '[]'));
+    const childrenByParent = new Map();
     groups.forEach(group => {
+        const key = group.parentId || '';
+        const children = childrenByParent.get(key) || [];
+        children.push(group);
+        childrenByParent.set(key, children);
+    });
+    childrenByParent.forEach(children => children.sort((a, b) => a.order - b.order));
+
+    const visibleGroups = [];
+    const appendVisible = (parentId = null, depth = 0) => {
+        (childrenByParent.get(parentId || '') || []).forEach(group => {
+            visibleGroups.push({ group, depth });
+            if (!collapsedGroups.has(group.id)) appendVisible(group.id, depth + 1);
+        });
+    };
+    appendVisible();
+
+    visibleGroups.forEach(({ group, depth }) => {
         const groupEl = document.createElement('div');
         groupEl.className = `group-item ${group.id === currentGroupId ? 'active' : ''}`;
         groupEl.dataset.id = group.id;
+        groupEl.draggable = true;
+        groupEl.style.setProperty('--group-depth', String(depth));
+
+        const hasChildren = (childrenByParent.get(group.id) || []).length > 0;
+        const expanderEl = document.createElement('button');
+        expanderEl.className = `group-expander material-symbols-outlined${hasChildren ? '' : ' placeholder'}`;
+        expanderEl.textContent = collapsedGroups.has(group.id) ? 'chevron_right' : 'expand_more';
+        expanderEl.title = collapsedGroups.has(group.id) ? 'Expand group' : 'Collapse group';
+        expanderEl.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!hasChildren) return;
+            if (collapsedGroups.has(group.id)) collapsedGroups.delete(group.id);
+            else collapsedGroups.add(group.id);
+            localStorage.setItem('collapsedGroups', JSON.stringify([...collapsedGroups]));
+            renderGroups();
+        });
+
+        const dragHandleEl = document.createElement('span');
+        dragHandleEl.className = 'group-drag-handle material-symbols-outlined';
+        dragHandleEl.textContent = 'drag_indicator';
+        dragHandleEl.title = 'Drag to reorder or nest';
 
         const nameEl = document.createElement('span');
         nameEl.className = 'group-name';
@@ -1204,10 +1314,14 @@ function renderGroups() {
             actionsEl.appendChild(deleteBtn);
         }
 
+        groupEl.appendChild(expanderEl);
+        groupEl.appendChild(dragHandleEl);
         groupEl.appendChild(nameEl);
         groupEl.appendChild(actionsEl);
 
-        groupEl.addEventListener('click', () => switchGroup(group.id));
+        groupEl.addEventListener('click', () => {
+            if (!groupDragState.didDrop) switchGroup(group.id);
+        });
 
         groupEl.addEventListener('dblclick', async (e) => {
             e.stopPropagation();
@@ -1217,8 +1331,101 @@ function renderGroups() {
             }
         });
 
+        groupEl.addEventListener('dragstart', (e) => {
+            groupDragState.draggedId = group.id;
+            groupDragState.didDrop = false;
+            groupEl.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/x-memable-group', group.id);
+        });
+        groupEl.addEventListener('dragend', () => {
+            groupEl.classList.remove('dragging');
+            clearGroupDropIndicators();
+            groupDragState.draggedId = null;
+            setTimeout(() => { groupDragState.didDrop = false; }, 0);
+        });
+        groupEl.addEventListener('dragover', (e) => {
+            const draggedId = groupDragState.draggedId;
+            if (!draggedId || draggedId === group.id || isGroupDescendant(group.id, draggedId)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'move';
+            clearGroupDropIndicators();
+            groupEl.classList.add(`drop-${getGroupDropPosition(e, groupEl)}`);
+        });
+        groupEl.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const draggedId = groupDragState.draggedId || e.dataTransfer.getData('text/x-memable-group');
+            if (!draggedId || draggedId === group.id || isGroupDescendant(group.id, draggedId)) return;
+            groupDragState.didDrop = true;
+            await moveGroup(draggedId, group.id, getGroupDropPosition(e, groupEl));
+        });
+
         groupList.appendChild(groupEl);
     });
+}
+
+const groupDragState = { draggedId: null, didDrop: false };
+
+function clearGroupDropIndicators() {
+    groupList.querySelectorAll('.drop-before, .drop-after, .drop-inside').forEach(element => {
+        element.classList.remove('drop-before', 'drop-after', 'drop-inside');
+    });
+}
+
+function getGroupDropPosition(event, element) {
+    const rect = element.getBoundingClientRect();
+    const ratio = (event.clientY - rect.top) / rect.height;
+    if (ratio < 0.25) return 'before';
+    if (ratio > 0.75) return 'after';
+    return 'inside';
+}
+
+function isGroupDescendant(candidateId, ancestorId) {
+    let current = groups.find(group => group.id === candidateId);
+    const visited = new Set();
+    while (current?.parentId && !visited.has(current.parentId)) {
+        if (current.parentId === ancestorId) return true;
+        visited.add(current.parentId);
+        current = groups.find(group => group.id === current.parentId);
+    }
+    return false;
+}
+
+function reindexGroupSiblings(parentId) {
+    groups
+        .filter(group => (group.parentId || null) === (parentId || null))
+        .sort((a, b) => a.order - b.order)
+        .forEach((group, index) => { group.order = index; });
+}
+
+async function moveGroup(draggedId, targetId, position) {
+    const dragged = groups.find(group => group.id === draggedId);
+    const target = groups.find(group => group.id === targetId);
+    if (!dragged || !target) return;
+
+    const oldParentId = dragged.parentId;
+    const nextParentId = position === 'inside' ? target.id : target.parentId;
+    const siblings = groups
+        .filter(group => group.id !== dragged.id && (group.parentId || null) === (nextParentId || null))
+        .sort((a, b) => a.order - b.order);
+    const targetIndex = position === 'inside'
+        ? siblings.length
+        : Math.max(0, siblings.findIndex(group => group.id === target.id) + (position === 'after' ? 1 : 0));
+
+    dragged.parentId = nextParentId || null;
+    siblings.splice(targetIndex, 0, dragged);
+    siblings.forEach((group, index) => { group.order = index; });
+    reindexGroupSiblings(oldParentId);
+
+    if (position === 'inside') {
+        const collapsedGroups = new Set(JSON.parse(localStorage.getItem('collapsedGroups') || '[]'));
+        collapsedGroups.delete(target.id);
+        localStorage.setItem('collapsedGroups', JSON.stringify([...collapsedGroups]));
+    }
+    await updateGroupsBatchDB(groups);
+    renderGroups();
 }
 
 async function switchGroup(groupId) {
@@ -1488,7 +1695,9 @@ async function createNewGroup() {
         id,
         name,
         viewMode: 'canvas',
-        kanbanColumns: cloneDefaultKanbanColumns()
+        kanbanColumns: cloneDefaultKanbanColumns(),
+        parentId: null,
+        order: groups.filter(group => !group.parentId).length
     };
     await addGroupDB(newGroup);
     groups.push(newGroup);
@@ -1506,8 +1715,22 @@ async function renameGroup(id, newName) {
 }
 
 async function deleteGroup(id) {
-    await deleteGroupDB(id);
+    const deletedGroup = groups.find(group => group.id === id);
+    if (!deletedGroup) return;
+    const replacementParentId = deletedGroup.parentId || null;
+    const children = groups
+        .filter(group => group.parentId === id)
+        .sort((a, b) => a.order - b.order);
+    children.forEach(child => { child.parentId = replacementParentId; });
     groups = groups.filter(g => g.id !== id);
+    const promotedIds = new Set(children.map(child => child.id));
+    const replacementSiblings = groups
+        .filter(group => (group.parentId || null) === replacementParentId && !promotedIds.has(group.id))
+        .sort((a, b) => a.order - b.order);
+    replacementSiblings.splice(Math.min(deletedGroup.order, replacementSiblings.length), 0, ...children);
+    replacementSiblings.forEach((group, index) => { group.order = index; });
+    await updateGroupsBatchDB(groups);
+    await deleteGroupDB(id);
     if (currentGroupId === id) {
         await switchGroup(DEFAULT_GROUP_ID);
     } else {
@@ -2112,9 +2335,9 @@ workspace.addEventListener('dblclick', async (e) => {
 
         if (e.target.closest('.kanban-card') || e.target.closest('.note')) return;
 
-        const rect = workspace.getBoundingClientRect();
-        const x = snap(convertViewportDeltaToWorkspace(e.clientX - rect.left) + workspace.scrollLeft);
-        const y = snap(convertViewportDeltaToWorkspace(e.clientY - rect.top) + workspace.scrollTop);
+        const point = getWorkspacePointFromPointer(e);
+        const x = snap(point.x);
+        const y = snap(point.y);
 
         await createNewNote('New Note', x, y, KANBAN_FREE_CANVAS_ID);
 
@@ -2138,9 +2361,10 @@ workspace.addEventListener('dblclick', async (e) => {
     // ノート自体やノート内の要素をクリックした場合は何もしない
     if (e.target !== workspace) return;
 
-    // クリック位置を取得してスナップ（スクロール分を加算）
-    const x = snap(e.offsetX + workspace.scrollLeft);
-    const y = snap(e.offsetY + workspace.scrollTop);
+    // 拡大率を補正したクリック位置を取得し、スクロール分を加えてスナップ
+    const point = getWorkspacePointFromPointer(e);
+    const x = snap(point.x);
+    const y = snap(point.y);
 
     // 空のメモを作成
     await createNewNote('New Note', x, y);
@@ -2407,8 +2631,9 @@ workspace.addEventListener('mousemove', (e) => {
     // ワークスペース自体（またはそこにあるドロップゾーン）の上でのみヒントを表示
     if (e.target === workspace || e.target.id === 'global-drop-zone') {
         canvasHint.classList.add('visible');
-        canvasHint.style.left = (e.clientX + 8) + 'px';
-        canvasHint.style.top = (e.clientY + 8) + 'px';
+        const zoomScale = getZoomScale();
+        canvasHint.style.left = ((e.clientX + 8) / zoomScale) + 'px';
+        canvasHint.style.top = ((e.clientY + 8) / zoomScale) + 'px';
     } else {
         canvasHint.classList.remove('visible');
     }
@@ -2438,6 +2663,13 @@ workspace.addEventListener('mouseleave', () => {
     const importInput = document.getElementById('import-input');
     const toggleSidebarBtn = document.getElementById('toggle-sidebar-button');
     const sidebar = document.getElementById('sidebar');
+    const sidebarResizer = document.getElementById('sidebar-resizer');
+
+    const savedSidebarWidth = Number(localStorage.getItem('sidebarWidth'));
+    const initialSidebarWidth = Number.isFinite(savedSidebarWidth)
+        ? Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, savedSidebarWidth))
+        : DEFAULT_SIDEBAR_WIDTH;
+    document.documentElement.style.setProperty('--sidebar-width', `${initialSidebarWidth}px`);
 
     // Restore sidebar state
     if (localStorage.getItem('sidebarCollapsed') === 'true') {
@@ -2457,6 +2689,40 @@ workspace.addEventListener('mouseleave', () => {
             if (iconSpan) {
                 iconSpan.textContent = isCollapsed ? 'menu' : 'menu_open';
             }
+        });
+    }
+
+    if (sidebarResizer && sidebar) {
+        sidebarResizer.addEventListener('pointerdown', (e) => {
+            if (sidebar.classList.contains('collapsed')) return;
+            e.preventDefault();
+            sidebarResizer.setPointerCapture(e.pointerId);
+            sidebar.classList.add('resizing');
+            const startX = e.clientX;
+            const startWidth = sidebar.getBoundingClientRect().width / getZoomScale();
+
+            const handleMove = (moveEvent) => {
+                const width = Math.min(
+                    MAX_SIDEBAR_WIDTH,
+                    Math.max(MIN_SIDEBAR_WIDTH, startWidth + convertViewportDeltaToWorkspace(moveEvent.clientX - startX))
+                );
+                document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
+            };
+            const handleEnd = () => {
+                sidebar.classList.remove('resizing');
+                sidebarResizer.removeEventListener('pointermove', handleMove);
+                sidebarResizer.removeEventListener('pointerup', handleEnd);
+                sidebarResizer.removeEventListener('pointercancel', handleEnd);
+                const width = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
+                localStorage.setItem('sidebarWidth', String(Math.round(width)));
+            };
+            sidebarResizer.addEventListener('pointermove', handleMove);
+            sidebarResizer.addEventListener('pointerup', handleEnd);
+            sidebarResizer.addEventListener('pointercancel', handleEnd);
+        });
+        sidebarResizer.addEventListener('dblclick', () => {
+            document.documentElement.style.setProperty('--sidebar-width', `${DEFAULT_SIDEBAR_WIDTH}px`);
+            localStorage.setItem('sidebarWidth', String(DEFAULT_SIDEBAR_WIDTH));
         });
     }
 
