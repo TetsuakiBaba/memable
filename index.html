@@ -48,6 +48,11 @@
                 title="Zoom In (Cmd/Ctrl + +)">
                 <span class="material-symbols-outlined">add</span>
             </button>
+            <button id="context-export-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button"
+                title="Export LLM Context">
+                <span class="material-symbols-outlined">smart_toy</span>
+                <span class="btn-text">Context</span>
+            </button>
             <button id="settings-button" class="btn m3-button-tonal py-1 px-3 me-2" type="button" title="Settings">
                 <span class="material-symbols-outlined">settings</span>
             </button>
@@ -80,6 +85,66 @@
                 aria-label="Resize groups sidebar" title="Drag to resize; double-click to reset"></div>
         </aside>
         <div id="workspace" class="position-relative flex-grow-1"></div>
+    </div>
+
+    <!-- Note Metadata Modal -->
+    <div class="modal fade" id="noteMetadataModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content m3-surface text-body">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title">Note Metadata</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body d-grid gap-3">
+                    <label>Title
+                        <input type="text" id="note-metadata-title" class="form-control m3-input mt-1">
+                    </label>
+                    <label>Tags <span class="small text-muted">(comma separated)</span>
+                        <input type="text" id="note-metadata-tags" class="form-control m3-input mt-1"
+                            placeholder="project, idea, important">
+                    </label>
+                    <label>Source URL
+                        <input type="url" id="note-metadata-source-url" class="form-control m3-input mt-1"
+                            placeholder="https://example.com">
+                    </label>
+                    <div id="note-metadata-dates" class="small text-muted"></div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button type="button" class="btn btn-sm m3-button-tonal" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" id="note-metadata-save" class="btn btn-sm m3-button-primary">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- LLM Context Export Modal -->
+    <div class="modal fade" id="contextExportModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content m3-surface text-body">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title">Export LLM Context</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="context-export-scope" class="small text-muted mb-2"></div>
+                    <div class="d-flex flex-wrap gap-3 mb-3">
+                        <label class="form-check"><input id="context-include-children" class="form-check-input" type="checkbox"> Include child groups</label>
+                        <label class="form-check"><input id="context-include-done" class="form-check-input" type="checkbox" checked> Include Done</label>
+                        <label class="form-check"><input id="context-include-images" class="form-check-input" type="checkbox"> Include image data references</label>
+                    </div>
+                    <label class="w-100 mb-3">Instruction (optional)
+                        <textarea id="context-instruction" class="form-control m3-input mt-1" rows="2"
+                            placeholder="Summarize decisions and extract open questions."></textarea>
+                    </label>
+                    <textarea id="context-export-preview" class="form-control context-export-preview" rows="14" readonly></textarea>
+                </div>
+                <div class="modal-footer border-0">
+                    <button type="button" class="btn btn-sm m3-button-tonal" data-bs-dismiss="modal">Close</button>
+                    <button type="button" id="context-download-button" class="btn btn-sm m3-button-tonal">Download .md</button>
+                    <button type="button" id="context-copy-button" class="btn btn-sm m3-button-primary">Copy Markdown</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Settings Modal -->

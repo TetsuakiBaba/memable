@@ -12,6 +12,9 @@
 - **Delete Note**: Click the trash icon in the top-right corner.
 - **Change Color**: Select a color from the palette in the header.
 - **Edit Content**: Click inside the note to type text.
+- **Markdown Preview**: Leave the note editor to preview headings, lists, bold text, inline/fenced code, quotes, links, and `[[Note Title]]` internal links.
+- **Edit Metadata**: Click the label icon to edit the title, comma-separated tags, and source URL.
+- **Select for Context**: Click the checkbox icon on one or more notes.
 - **Add Images**: **Drag & Drop** image files into the workspace or **Paste (Cmd+V)**.
 
 ---
@@ -49,6 +52,7 @@ Open the settings via the "Gear icon" in the navigation bar.
 
 - **External Storage (Desktop App Only)**: 
     - You can specify a folder (like Dropbox or Google Drive) to sync your notes in real-time across multiple devices.
+    - Text notes are saved as individual Markdown files. Images go in `assets/`, while `layout.json` keeps visual positions and sizes separate from note meaning.
 - **Export Data**:
     - Backup all current data as a JSON file.
 - **Import Data**:
@@ -56,6 +60,13 @@ Open the settings via the "Gear icon" in the navigation bar.
 
 ---
 
-## 5. About the Project
+## 5. LLM Context Export
+
+- Click **Context** without selecting notes to export the current group.
+- Select notes with their checkbox buttons to export only those notes.
+- Optionally include child groups, completed notes, image data references, and an instruction for the receiving LLM.
+- Copy the generated Markdown or download it as a `.md` file.
+
+## 6. About the Project
 
 `memable` is built for minimal and fast organization of thoughts. It features a Material Design 3 based interface, supports Dark Mode, and includes Grid Snapping for neat alignment.

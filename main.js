@@ -17,8 +17,173 @@ if (!gotSingleInstanceLock) {
 // --- Persistence for Settings ---
 const configPath = path.join(app.getPath('userData'), 'config.json');
 let config = { externalPath: null, globalShortcutsEnabled: false };
-let watcher = null;
+let watchers = [];
 let lastInternalWriteTime = 0;
+let externalChangeTimer = null;
+
+const NOTE_FILE_VERSION = 2;
+
+function ensureDirectory(dirPath) {
+    fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function writeTextAtomic(filePath, content) {
+    const tempPath = `${filePath}.tmp`;
+    fs.writeFileSync(tempPath, content, 'utf8');
+    fs.renameSync(tempPath, filePath);
+}
+
+function writeJsonAtomic(filePath, value) {
+    writeTextAtomic(filePath, JSON.stringify(value, null, 2));
+}
+
+function noteFileName(id) {
+    return `${String(id).replace(/[^a-zA-Z0-9._-]/g, '_')}.md`;
+}
+
+function encodeFrontmatterValue(value) {
+    return JSON.stringify(value === undefined ? null : value);
+}
+
+function serializeNoteMarkdown(note, assetPath = null) {
+    const fields = {
+        id: note.id,
+        title: note.title || '',
+        group: note.groupId,
+        type: note.type || 'text',
+        status: note.kanbanColumnId || 'todo',
+        order: Number.isFinite(note.kanbanOrder) ? note.kanbanOrder : 0,
+        tags: Array.isArray(note.tags) ? note.tags : [],
+        created_at: note.createdAt || null,
+        updated_at: note.updatedAt || null,
+        source: note.source || { type: 'manual', url: null },
+        asset: assetPath
+    };
+    const frontmatter = Object.entries(fields)
+        .map(([key, value]) => `${key}: ${encodeFrontmatterValue(value)}`)
+        .join('\n');
+    const body = note.type === 'image'
+        ? (assetPath ? `![${note.title || 'image'}](${assetPath})` : '')
+        : (note.content || '');
+    return `---\n${frontmatter}\n---\n\n${body}\n`;
+}
+
+function parseNoteMarkdown(markdown) {
+    const match = String(markdown).match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+    if (!match) return null;
+    const metadata = {};
+    match[1].split(/\r?\n/).forEach(line => {
+        const separator = line.indexOf(':');
+        if (separator < 0) return;
+        const key = line.slice(0, separator).trim();
+        const rawValue = line.slice(separator + 1).trim();
+        try {
+            metadata[key] = JSON.parse(rawValue);
+        } catch (_) {
+            metadata[key] = rawValue;
+        }
+    });
+    return { metadata, body: match[2].replace(/^\r?\n/, '').replace(/\r?\n$/, '') };
+}
+
+function dataUrlToAsset(content, assetsDir, id) {
+    const match = typeof content === 'string' && content.match(/^data:([^;,]+);base64,(.+)$/);
+    if (!match) return null;
+    const extensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+    const extension = extensions[match[1]] || 'bin';
+    const filename = `${String(id).replace(/[^a-zA-Z0-9._-]/g, '_')}.${extension}`;
+    fs.writeFileSync(path.join(assetsDir, filename), Buffer.from(match[2], 'base64'));
+    return `../assets/${filename}`;
+}
+
+function assetToDataUrl(notesDir, relativeAssetPath) {
+    if (!relativeAssetPath || typeof relativeAssetPath !== 'string') return '';
+    const resolved = path.resolve(notesDir, relativeAssetPath);
+    const assetsRoot = path.resolve(path.dirname(notesDir), 'assets');
+    const relativeToAssets = path.relative(assetsRoot, resolved);
+    if (relativeToAssets.startsWith('..') || path.isAbsolute(relativeToAssets)) return '';
+    const extension = path.extname(resolved).toLowerCase();
+    const mimeTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+    if (!fs.existsSync(resolved) || !mimeTypes[extension]) return '';
+    return `data:${mimeTypes[extension]};base64,${fs.readFileSync(resolved).toString('base64')}`;
+}
+
+function saveExternalSnapshot(snapshot) {
+    if (!config.externalPath) return false;
+    const notesDir = path.join(config.externalPath, 'notes');
+    const assetsDir = path.join(config.externalPath, 'assets');
+    ensureDirectory(notesDir);
+    ensureDirectory(assetsDir);
+
+    const notes = Array.isArray(snapshot.notes) ? snapshot.notes : [];
+    const previousIndexPath = path.join(config.externalPath, 'index.json');
+    let previousFiles = [];
+    try {
+        previousFiles = JSON.parse(fs.readFileSync(previousIndexPath, 'utf8')).notes || [];
+    } catch (_) { /* first sync */ }
+
+    const nextFiles = [];
+    const layouts = {};
+    notes.forEach(note => {
+        const filename = noteFileName(note.id);
+        const assetPath = note.type === 'image' ? dataUrlToAsset(note.content, assetsDir, note.id) : null;
+        writeTextAtomic(path.join(notesDir, filename), serializeNoteMarkdown(note, assetPath));
+        nextFiles.push(filename);
+        layouts[note.id] = note.presentation || {};
+    });
+
+    const nextFileSet = new Set(nextFiles);
+    previousFiles.filter(filename => !nextFileSet.has(filename)).forEach(filename => {
+        const stalePath = path.join(notesDir, path.basename(filename));
+        if (fs.existsSync(stalePath)) fs.unlinkSync(stalePath);
+    });
+
+    writeJsonAtomic(path.join(config.externalPath, 'groups.json'), snapshot.groups || []);
+    writeJsonAtomic(path.join(config.externalPath, 'layout.json'), layouts);
+    writeJsonAtomic(previousIndexPath, {
+        source: 'memable',
+        version: NOTE_FILE_VERSION,
+        updatedAt: new Date().toISOString(),
+        notes: nextFiles
+    });
+    return true;
+}
+
+function loadExternalSnapshot() {
+    if (!config.externalPath) return null;
+    const notesDir = path.join(config.externalPath, 'notes');
+    if (!fs.existsSync(notesDir)) return null;
+    let groups = [];
+    let layouts = {};
+    try { groups = JSON.parse(fs.readFileSync(path.join(config.externalPath, 'groups.json'), 'utf8')); } catch (_) { /* optional */ }
+    try { layouts = JSON.parse(fs.readFileSync(path.join(config.externalPath, 'layout.json'), 'utf8')); } catch (_) { /* optional */ }
+
+    const notes = fs.readdirSync(notesDir)
+        .filter(filename => filename.endsWith('.md'))
+        .map(filename => ({ filename, parsed: parseNoteMarkdown(fs.readFileSync(path.join(notesDir, filename), 'utf8')) }))
+        .filter(item => item.parsed)
+        .map(({ filename, parsed }) => ({ filename, ...parsed }))
+        .filter(Boolean)
+        .map(({ filename, metadata, body }) => {
+            const id = metadata.id || path.basename(filename, '.md');
+            const type = metadata.type === 'image' ? 'image' : 'text';
+            return {
+                id,
+                title: metadata.title || '',
+                groupId: metadata.group,
+                type,
+                content: type === 'image' ? assetToDataUrl(notesDir, metadata.asset) : body,
+                kanbanColumnId: metadata.status,
+                kanbanOrder: metadata.order,
+                tags: metadata.tags,
+                createdAt: metadata.created_at,
+                updatedAt: metadata.updated_at,
+                source: metadata.source,
+                presentation: layouts[id] || {}
+            };
+        });
+    return { notes, groups };
+}
 
 try {
     if (fs.existsSync(configPath)) {
@@ -51,23 +216,25 @@ function registerShortcuts() {
 }
 
 function startWatching() {
-    if (watcher) {
-        watcher.close();
-        watcher = null;
-    }
+    watchers.forEach(item => item.close());
+    watchers = [];
 
     if (config.externalPath && fs.existsSync(config.externalPath)) {
         console.log(`Watching for changes in: ${config.externalPath}`);
-        watcher = fs.watch(config.externalPath, (eventType, filename) => {
+        const notifyChange = (eventType, filename) => {
             // 自分の書き込みから1秒以内なら無視
             if (Date.now() - lastInternalWriteTime < 1000) return;
-
-            if (filename === 'notes.json' || filename === 'groups.json') {
-                if (mainWindow) {
-                    mainWindow.webContents.send('external-data-changed');
-                }
-            }
-        });
+            const relevant = !filename || filename === 'notes.json' || filename === 'groups.json'
+                || filename === 'layout.json' || filename === 'index.json' || String(filename).endsWith('.md');
+            if (!relevant) return;
+            clearTimeout(externalChangeTimer);
+            externalChangeTimer = setTimeout(() => {
+                if (mainWindow) mainWindow.webContents.send('external-data-changed');
+            }, 250);
+        };
+        watchers.push(fs.watch(config.externalPath, notifyChange));
+        const notesDir = path.join(config.externalPath, 'notes');
+        if (fs.existsSync(notesDir)) watchers.push(fs.watch(notesDir, notifyChange));
     }
 }
 
@@ -160,6 +327,29 @@ ipcMain.handle('load-external-data', async (event, filename) => {
         console.error(`Failed to load ${filename}`, e);
     }
     return null;
+});
+
+ipcMain.handle('save-external-snapshot', async (event, snapshot) => {
+    if (!config.externalPath) return false;
+    try {
+        lastInternalWriteTime = Date.now();
+        const notesDirectoryAlreadyExists = fs.existsSync(path.join(config.externalPath, 'notes'));
+        const saved = saveExternalSnapshot(snapshot || {});
+        if (!notesDirectoryAlreadyExists) startWatching();
+        return saved;
+    } catch (e) {
+        console.error('Failed to save external snapshot', e);
+        return false;
+    }
+});
+
+ipcMain.handle('load-external-snapshot', async () => {
+    try {
+        return loadExternalSnapshot();
+    } catch (e) {
+        console.error('Failed to load external snapshot', e);
+        return null;
+    }
 });
 
 ipcMain.handle('export-to-json', async (event, data) => {

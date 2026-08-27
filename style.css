@@ -474,6 +474,21 @@ body.kanban-drop-copy-cursor * {
     opacity: 0.6;
 }
 
+.kanban-card.note-selected,
+.note.note-selected {
+    outline: 3px solid var(--m3-primary);
+    outline-offset: 2px;
+}
+
+.kanban-card.linked-note-highlight,
+.note.linked-note-highlight {
+    animation: linked-note-pulse 0.6s ease-in-out 3;
+}
+
+@keyframes linked-note-pulse {
+    50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--m3-primary) 45%, transparent); }
+}
+
 .kanban-card-header {
     display: flex;
     align-items: center;
@@ -515,6 +530,55 @@ body.kanban-drop-copy-cursor * {
     max-height: 240px;
     overflow: auto;
     outline: none;
+}
+
+.markdown-preview {
+    cursor: text;
+}
+
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4 {
+    margin: 0.35em 0 0.2em;
+    font-size: 1.15em;
+    line-height: 1.25;
+}
+
+.markdown-preview blockquote {
+    margin: 0.35em 0;
+    padding-left: 0.7em;
+    border-left: 3px solid rgba(0, 0, 0, 0.25);
+    opacity: 0.85;
+}
+
+.markdown-preview pre {
+    margin: 0.4em 0;
+    padding: 0.55em;
+    border-radius: 6px;
+    overflow: auto;
+    background: rgba(0, 0, 0, 0.08);
+    white-space: pre-wrap;
+}
+
+.markdown-preview code {
+    padding: 0.08em 0.25em;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.08);
+}
+
+.markdown-preview .internal-note-link {
+    color: #4b3a8f;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.context-export-preview {
+    min-height: 320px;
+    resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.8rem;
+    white-space: pre;
 }
 
 .kanban-card-content img {

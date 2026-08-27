@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     toggleShortcuts: (enabled) => ipcRenderer.invoke('toggle-shortcuts', enabled),
     saveExternalData: (filename, data) => ipcRenderer.invoke('save-external-data', filename, data),
     loadExternalData: (filename) => ipcRenderer.invoke('load-external-data', filename),
+    saveExternalSnapshot: (snapshot) => ipcRenderer.invoke('save-external-snapshot', snapshot),
+    loadExternalSnapshot: () => ipcRenderer.invoke('load-external-snapshot'),
     exportToJson: (data) => ipcRenderer.invoke('export-to-json', data),
     resetConfig: () => ipcRenderer.invoke('reset-config'),
     triggerSystemPaste: () => ipcRenderer.send('trigger-system-paste'),

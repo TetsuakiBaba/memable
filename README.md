@@ -7,9 +7,12 @@ A temporary copy-and-paste sticky-note web application (PWA-enabled) with native
 
 ## Features
 - Create, edit, delete, and copy text notes
+- **Markdown Notes**: Preview headings, lists, code, quotes, links, and `[[internal links]]`; click a note to edit its Markdown source
+- **LLM Context Export**: Copy or download selected notes, a group, or a group tree as structured Markdown
+- **LLM-Friendly Metadata**: Stable IDs, titles, tags, source URLs, and created/updated timestamps
 - Save image notes via clipboard paste or drag-and-drop
 - Move and resize notes freely like sticky notes
-- **Multi-Device Sync**: Sync notes via external folders (e.g., Dropbox, iCloud) with real-time file watching
+- **Multi-Device Sync**: Sync notes via external folders (e.g., Dropbox, iCloud) as one Markdown file per note
 - **Group Management**: Organize notes into separate groups using the sidebar
 - **Custom Kanban Steps**: Keep ToDo/Done fixed while renaming or adding intermediate stages per group
 - **Align Notes**: Automatically layout notes in a grid while preserving their original sizes
@@ -53,7 +56,24 @@ You can download the latest pre-built application from the [GitHub Releases](htt
 7. Toggle **Grid Snap** in the navbar to align notes to a 25px grid
 8. Toggle dark/light mode using the switch in the navbar
 9. In the sidebar, click the tune icon on a group to customize the Kanban steps between ToDo and Done
-10. Notes and their positions are stored in IndexedDB (`memable-db`) and persist after reloads
+10. Click the label icon to edit a note's title, tags, and source URL
+11. Click the checkbox icon to select notes, then use **Context** to export LLM-ready Markdown
+12. Notes and their positions are stored in IndexedDB (`memable-db`) and persist after reloads
+
+## LLM-Friendly External Format
+
+Desktop external sync stores semantic content separately from presentation data:
+
+```text
+memable/
+├── notes/       # One Markdown file per note, with YAML frontmatter
+├── assets/      # Image-note assets
+├── groups.json
+├── layout.json  # Positions, sizes, colors, and stacking order
+└── index.json
+```
+
+Legacy `notes.json` folders and older JSON backups remain importable. New JSON exports use the nested `presentation` object for visual-only fields.
 
 ## Desktop Application via Electron
 

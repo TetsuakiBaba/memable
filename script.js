@@ -20,6 +20,8 @@ const DEFAULT_TEXT_NOTE_HEIGHT = 200;
 const DEFAULT_SIDEBAR_WIDTH = 200;
 const MIN_SIDEBAR_WIDTH = 160;
 const MAX_SIDEBAR_WIDTH = 480;
+const DATA_FORMAT_VERSION = '2.0.0';
+const selectedNoteIds = new Set();
 
 // --- Undo Logic ---
 let lastDeletedNote = null;
@@ -107,8 +109,12 @@ async function syncToExternalIfNeeded() {
         // すべてのメモとグループを取得して保存
         const allNotes = await getAllNotesDB_Full();
         const allGroups = await getAllGroupsDB();
-        await window.electronAPI.saveExternalData('notes.json', allNotes);
-        await window.electronAPI.saveExternalData('groups.json', allGroups);
+        if (window.electronAPI.saveExternalSnapshot) {
+            await window.electronAPI.saveExternalSnapshot({ notes: allNotes, groups: allGroups });
+        } else {
+            await window.electronAPI.saveExternalData('notes.json', allNotes);
+            await window.electronAPI.saveExternalData('groups.json', allGroups);
+        }
     }
 }
 
@@ -116,8 +122,11 @@ async function syncToExternalIfNeeded() {
 async function syncFromExternalIfNeeded() {
     if (storageMode === 'external' && window.electronAPI) {
         try {
-            const extNotes = await window.electronAPI.loadExternalData('notes.json');
-            const extGroups = await window.electronAPI.loadExternalData('groups.json');
+            const snapshot = window.electronAPI.loadExternalSnapshot
+                ? await window.electronAPI.loadExternalSnapshot()
+                : null;
+            const extNotes = snapshot?.notes ?? await window.electronAPI.loadExternalData('notes.json');
+            const extGroups = snapshot?.groups ?? await window.electronAPI.loadExternalData('groups.json');
 
             const hasNotesFile = Array.isArray(extNotes);
             const hasGroupsFile = Array.isArray(extGroups);
@@ -133,7 +142,7 @@ async function syncFromExternalIfNeeded() {
                 const noteStore = tx.objectStore('notes');
                 noteStore.clear();
                 for (const note of normalizedNotes) {
-                    noteStore.put(note);
+                    noteStore.put(serializeNoteForStorage(note));
                 }
             }
 
@@ -231,6 +240,200 @@ function formatNoteSize(content = '') {
     const characterCount = countCharacters(content);
     const byteCount = new Blob([content]).size;
     return `${characterCount} chars / ${byteCount} bytes`;
+}
+
+function appendInlineMarkdown(container, text) {
+    const tokenPattern = /(\[\[[^\]\n]+\]\]|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+    let cursor = 0;
+    for (const match of text.matchAll(tokenPattern)) {
+        if (match.index > cursor) container.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+        const token = match[0];
+        if (token.startsWith('[[')) {
+            const target = token.slice(2, -2).trim();
+            const link = document.createElement('a');
+            link.href = '#';
+            link.className = 'internal-note-link';
+            link.dataset.noteRef = target;
+            link.textContent = target;
+            link.contentEditable = 'false';
+            container.appendChild(link);
+        } else if (token.startsWith('[')) {
+            const parts = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
+            const link = document.createElement('a');
+            link.href = parts[2];
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = parts[1];
+            link.contentEditable = 'false';
+            container.appendChild(link);
+        } else if (token.startsWith('`')) {
+            const code = document.createElement('code');
+            code.textContent = token.slice(1, -1);
+            container.appendChild(code);
+        } else {
+            const strong = document.createElement('strong');
+            strong.textContent = token.slice(2, -2);
+            container.appendChild(strong);
+        }
+        cursor = match.index + token.length;
+    }
+    if (cursor < text.length) container.appendChild(document.createTextNode(text.slice(cursor)));
+}
+
+function renderMarkdownInto(element, markdown) {
+    element.replaceChildren();
+    const lines = String(markdown || '').replace(/\r\n?/g, '\n').split('\n');
+    let codeBlock = null;
+    lines.forEach(line => {
+        if (line.startsWith('```')) {
+            if (codeBlock) {
+                element.appendChild(codeBlock);
+                codeBlock = null;
+            } else {
+                codeBlock = document.createElement('pre');
+                codeBlock.appendChild(document.createElement('code'));
+            }
+            return;
+        }
+        if (codeBlock) {
+            const code = codeBlock.querySelector('code');
+            code.textContent += `${code.textContent ? '\n' : ''}${line}`;
+            return;
+        }
+
+        let block;
+        const heading = line.match(/^(#{1,4})\s+(.+)$/);
+        const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+        const numbered = line.match(/^\s*(\d+)\.\s+(.+)$/);
+        const quote = line.match(/^>\s?(.*)$/);
+        if (heading) {
+            block = document.createElement(`h${heading[1].length}`);
+            appendInlineMarkdown(block, heading[2]);
+        } else if (bullet) {
+            block = document.createElement('div');
+            block.className = 'markdown-list-item';
+            block.append('• ');
+            appendInlineMarkdown(block, bullet[1]);
+        } else if (numbered) {
+            block = document.createElement('div');
+            block.className = 'markdown-list-item';
+            block.append(`${numbered[1]}. `);
+            appendInlineMarkdown(block, numbered[2]);
+        } else if (quote) {
+            block = document.createElement('blockquote');
+            appendInlineMarkdown(block, quote[1]);
+        } else if (!line) {
+            block = document.createElement('br');
+        } else {
+            block = document.createElement('div');
+            appendInlineMarkdown(block, line);
+        }
+        element.appendChild(block);
+    });
+    if (codeBlock) element.appendChild(codeBlock);
+    element.classList.add('markdown-preview');
+}
+
+async function openInternalNoteLink(reference) {
+    const allGroups = await getAllGroupsDB();
+    const allNotes = normalizeBackupPayload({ notes: await getAllNotesDB_Full(), groups: allGroups }).notes;
+    const normalizedReference = String(reference).trim().toLocaleLowerCase();
+    const target = allNotes.find(note => note.id === reference)
+        || allNotes.find(note => normalizeNoteTitle(note.title).toLocaleLowerCase() === normalizedReference);
+    if (!target) {
+        showToast(`Note not found: ${reference}`);
+        return;
+    }
+    if (target.groupId !== currentGroupId) await switchGroup(target.groupId);
+    const targetElement = workspace.querySelector(`[data-id='${target.id}']`);
+    if (targetElement) {
+        targetElement.classList.add('linked-note-highlight');
+        targetElement.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        setTimeout(() => targetElement.classList.remove('linked-note-highlight'), 1800);
+    }
+}
+
+function setupMarkdownEditor(element, note, onInput = null) {
+    element.contentEditable = 'true';
+    element.spellcheck = false;
+    renderMarkdownInto(element, note.content);
+    let originalContent = note.content;
+
+    element.addEventListener('focus', () => {
+        if (!element.classList.contains('markdown-preview')) return;
+        originalContent = note.content;
+        element.classList.remove('markdown-preview');
+        element.textContent = note.content;
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    });
+    element.addEventListener('input', () => {
+        note.content = getEditablePlainText(element);
+        if (onInput) onInput();
+    });
+    element.addEventListener('blur', async () => {
+        note.content = getEditablePlainText(element);
+        if (note.content !== originalContent) touchNote(note);
+        await updateNoteDB(note);
+        renderMarkdownInto(element, note.content);
+    });
+    element.addEventListener('mousedown', e => {
+        const link = e.target.closest('.internal-note-link');
+        if (!link) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openInternalNoteLink(link.dataset.noteRef);
+    });
+    element.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            element.blur();
+        }
+    });
+}
+
+function attachNoteSelection(noteElement, headerElement, note) {
+    noteElement.classList.toggle('note-selected', selectedNoteIds.has(note.id));
+    headerElement.addEventListener('click', e => {
+        if (!(e.metaKey || e.ctrlKey) || e.target.closest('button, .color-swatch, a')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (selectedNoteIds.has(note.id)) selectedNoteIds.delete(note.id);
+        else selectedNoteIds.add(note.id);
+        noteElement.classList.toggle('note-selected', selectedNoteIds.has(note.id));
+        updateContextExportButton();
+    });
+}
+
+function toggleNoteSelection(noteId) {
+    if (selectedNoteIds.has(noteId)) selectedNoteIds.delete(noteId);
+    else selectedNoteIds.add(noteId);
+    workspace.querySelector(`[data-id='${noteId}']`)?.classList.toggle('note-selected', selectedNoteIds.has(noteId));
+    updateContextExportButton();
+}
+
+function createSelectionButton(note) {
+    const button = document.createElement('button');
+    button.className = 'btn note-select-button';
+    button.title = 'Select for Context Export';
+    button.innerHTML = `<span class="material-symbols-outlined">${selectedNoteIds.has(note.id) ? 'check_box' : 'check_box_outline_blank'}</span>`;
+    button.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleNoteSelection(note.id);
+        button.querySelector('.material-symbols-outlined').textContent = selectedNoteIds.has(note.id) ? 'check_box' : 'check_box_outline_blank';
+    });
+    return button;
+}
+
+function updateContextExportButton() {
+    const button = document.getElementById('context-export-button');
+    if (!button) return;
+    const label = button.querySelector('.btn-text');
+    if (label) label.textContent = selectedNoteIds.size ? `Context (${selectedNoteIds.size})` : 'Context';
 }
 
 const EDITABLE_BLOCK_TAG_NAMES = new Set([
@@ -535,12 +738,34 @@ function normalizeBackupPayload(payload) {
         note.type = note.type === 'image' ? 'image' : 'text';
         note.title = normalizeNoteTitle(note.title);
         note.content = typeof note.content === 'string' ? note.content : '';
-        note.x = Number.isFinite(note.x) ? note.x : 10;
-        note.y = Number.isFinite(note.y) ? note.y : 10;
-        note.width = Number.isFinite(note.width) ? note.width : (note.type === 'image' ? 200 : 250);
-        note.height = Number.isFinite(note.height) ? note.height : 200;
-        note.color = COLORS.some(color => color.name === note.color) ? note.color : defaultNoteColor;
-        note.zIndex = Number.isFinite(note.zIndex) ? note.zIndex : 100;
+        note.tags = Array.isArray(note.tags)
+            ? [...new Set(note.tags.map(tag => String(tag).trim()).filter(Boolean))]
+            : [];
+        note.createdAt = typeof note.createdAt === 'string' && note.createdAt ? note.createdAt : null;
+        note.updatedAt = typeof note.updatedAt === 'string' && note.updatedAt ? note.updatedAt : note.createdAt;
+        note.source = note.source && typeof note.source === 'object'
+            ? {
+                type: typeof note.source.type === 'string' && note.source.type ? note.source.type : 'manual',
+                url: typeof note.source.url === 'string' && note.source.url ? note.source.url : null
+            }
+            : { type: 'manual', url: null };
+
+        const presentation = note.presentation && typeof note.presentation === 'object' ? note.presentation : {};
+        note.x = Number.isFinite(presentation.x) ? presentation.x : (Number.isFinite(note.x) ? note.x : 10);
+        note.y = Number.isFinite(presentation.y) ? presentation.y : (Number.isFinite(note.y) ? note.y : 10);
+        note.width = Number.isFinite(presentation.width) ? presentation.width : (Number.isFinite(note.width) ? note.width : (note.type === 'image' ? 200 : 250));
+        note.height = Number.isFinite(presentation.height) ? presentation.height : (Number.isFinite(note.height) ? note.height : 200);
+        const presentationColor = presentation.color || note.color;
+        note.color = COLORS.some(color => color.name === presentationColor) ? presentationColor : defaultNoteColor;
+        note.zIndex = Number.isFinite(presentation.zIndex) ? presentation.zIndex : (Number.isFinite(note.zIndex) ? note.zIndex : 100);
+        note.presentation = {
+            x: note.x,
+            y: note.y,
+            width: note.width,
+            height: note.height,
+            color: note.color,
+            zIndex: note.zIndex
+        };
 
         const group = groupMap.get(note.groupId) || fallbackGroup;
         const columns = normalizeKanbanColumns(group.kanbanColumns);
@@ -560,6 +785,30 @@ function normalizeBackupPayload(payload) {
     });
 
     return { notes: normalizedNotes, groups: normalizedGroups };
+}
+
+function serializeNoteForStorage(note) {
+    const normalized = note;
+    const stored = { ...note };
+    stored.presentation = {
+        x: normalized.x,
+        y: normalized.y,
+        width: normalized.width,
+        height: normalized.height,
+        color: normalized.color,
+        zIndex: normalized.zIndex
+    };
+    delete stored.x;
+    delete stored.y;
+    delete stored.width;
+    delete stored.height;
+    delete stored.color;
+    delete stored.zIndex;
+    return stored;
+}
+
+function touchNote(note) {
+    note.updatedAt = new Date().toISOString();
 }
 
 function normalizeNoteTitle(title) {
@@ -618,9 +867,14 @@ async function migrateLegacyNotes() {
             const normalized = normalizeBackupPayload({ notes: allNotes, groups: allGroups });
 
             normalized.groups.forEach(group => groupStore.put(group));
-            normalized.notes.forEach(note => noteStore.put(note));
+            normalized.notes.forEach(note => noteStore.put(serializeNoteForStorage(note)));
         };
     };
+    return new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+    });
 }
 
 async function getAllGroupsDB() {
@@ -704,10 +958,14 @@ async function deleteGroupDB(id) {
 }
 
 async function addNoteDB(note) {
+    const now = new Date().toISOString();
+    note.createdAt = note.createdAt || now;
+    note.updatedAt = note.updatedAt || note.createdAt;
     const normalizedNote = normalizeBackupPayload({ notes: [note], groups }).notes[0] || note;
+    Object.assign(note, normalizedNote);
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
-    tx.objectStore('notes').add(normalizedNote);
+    tx.objectStore('notes').add(serializeNoteForStorage(normalizedNote));
     return new Promise((res, rej) => {
         tx.oncomplete = async () => {
             await syncToExternalIfNeeded();
@@ -718,9 +976,10 @@ async function addNoteDB(note) {
 }
 async function updateNoteDB(note) {
     const normalizedNote = normalizeBackupPayload({ notes: [note], groups }).notes[0] || note;
+    Object.assign(note, normalizedNote);
     const db = await dbPromise;
     const tx = db.transaction('notes', 'readwrite');
-    tx.objectStore('notes').put(normalizedNote);
+    tx.objectStore('notes').put(serializeNoteForStorage(normalizedNote));
     return new Promise((res, rej) => {
         tx.oncomplete = async () => {
             await syncToExternalIfNeeded();
@@ -740,7 +999,7 @@ async function updateNotesBatchDB(notesToUpdate) {
     const store = tx.objectStore('notes');
 
     normalizedNotes.forEach(note => {
-        store.put(note);
+        store.put(serializeNoteForStorage(note));
     });
 
     return new Promise((res, rej) => {
@@ -796,11 +1055,14 @@ function numToKeyId(num) {
 
 // 各メモにキーIDを割り当て、DBとDOMを更新
 async function assignNoteIds() {
+    const changedNotes = [];
     for (let i = 0; i < notes.length; i++) {
         const note = notes[i];
         const keyId = numToKeyId(i + 1);
-        note.keyId = keyId;
-        await updateNoteDB(note);
+        if (note.keyId !== keyId) {
+            note.keyId = keyId;
+            changedNotes.push(note);
+        }
         const noteEl = workspace.querySelector(`[data-id='${note.id}']`);
         if (noteEl) {
             const idEl = noteEl.querySelector('.note-id');
@@ -810,13 +1072,14 @@ async function assignNoteIds() {
             }
         }
     }
+    await updateNotesBatchDB(changedNotes);
 }
 
 // --- Export / Import ---
 async function handleExport() {
     const allNotes = await getAllNotesDB_Full();
     const allGroups = await getAllGroupsDB();
-    const data = { notes: allNotes, groups: allGroups, version: '1.2.0', source: 'memable' };
+    const data = { notes: allNotes, groups: allGroups, version: DATA_FORMAT_VERSION, source: 'memable' };
 
     if (window.electronAPI) {
         const success = await window.electronAPI.exportToJson(data);
@@ -831,6 +1094,125 @@ async function handleExport() {
         a.click();
         URL.revokeObjectURL(url);
     }
+}
+
+function getDescendantGroupIds(rootId, groupItems) {
+    const result = new Set([rootId]);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        groupItems.forEach(group => {
+            if (group.parentId && result.has(group.parentId) && !result.has(group.id)) {
+                result.add(group.id);
+                changed = true;
+            }
+        });
+    }
+    return result;
+}
+
+function getNoteStatusName(note, group) {
+    return normalizeKanbanColumns(group?.kanbanColumns).find(column => column.id === note.kanbanColumnId)?.name
+        || note.kanbanColumnId
+        || 'ToDo';
+}
+
+function buildContextMarkdown(noteItems, groupItems, options = {}) {
+    const instruction = options.instruction?.trim();
+    const lines = [];
+    if (instruction) lines.push('# Instruction', '', instruction, '');
+    lines.push('# Memable Context', '', `Exported: ${new Date().toISOString()}`, '');
+
+    const orderedGroups = normalizeGroupHierarchy(groupItems);
+    orderedGroups.forEach(group => {
+        const groupNotes = noteItems.filter(note => note.groupId === group.id);
+        if (groupNotes.length === 0) return;
+        lines.push(`## ${group.name}`, '');
+        const columns = normalizeKanbanColumns(group.kanbanColumns);
+        columns.forEach(column => {
+            const columnNotes = groupNotes
+                .filter(note => note.kanbanColumnId === column.id)
+                .sort((a, b) => (a.kanbanOrder || 0) - (b.kanbanOrder || 0));
+            if (!columnNotes.length || (!options.includeDone && column.id === columns.at(-1)?.id)) return;
+            lines.push(`### ${column.name}`, '');
+            columnNotes.forEach(note => {
+                lines.push(`#### ${note.title || `Untitled (${note.id})`}`);
+                lines.push(`- ID: ${note.id}`);
+                if (note.tags?.length) lines.push(`- Tags: ${note.tags.join(', ')}`);
+                lines.push(`- Updated: ${note.updatedAt || '-'}`);
+                if (note.source?.url) lines.push(`- Source: ${note.source.url}`);
+                lines.push('');
+                if (note.type === 'image') {
+                    lines.push(options.includeImages ? note.content : '[Image note omitted]');
+                } else {
+                    lines.push(note.content || '');
+                }
+                lines.push('');
+            });
+        });
+        const freeNotes = groupNotes.filter(note => note.kanbanColumnId === KANBAN_FREE_CANVAS_ID);
+        if (freeNotes.length) {
+            lines.push('### Canvas', '');
+            freeNotes.forEach(note => {
+                lines.push(`#### ${note.title || `Untitled (${note.id})`}`, '');
+                if (note.tags?.length) lines.push(`Tags: ${note.tags.join(', ')}`, '');
+                lines.push(note.type === 'image' ? (options.includeImages ? note.content : '[Image note omitted]') : note.content, '');
+            });
+        }
+    });
+    return `${lines.join('\n').trim()}\n`;
+}
+
+async function getContextExportData() {
+    const allGroups = normalizeGroupHierarchy(await getAllGroupsDB());
+    const allNotes = normalizeBackupPayload({ notes: await getAllNotesDB_Full(), groups: allGroups }).notes;
+    if (selectedNoteIds.size) {
+        return {
+            notes: allNotes.filter(note => selectedNoteIds.has(note.id)),
+            groups: allGroups,
+            scope: `${selectedNoteIds.size} selected note(s)`
+        };
+    }
+    const includeChildren = document.getElementById('context-include-children')?.checked;
+    const groupIds = includeChildren ? getDescendantGroupIds(currentGroupId, allGroups) : new Set([currentGroupId]);
+    return {
+        notes: allNotes.filter(note => groupIds.has(note.groupId)),
+        groups: allGroups,
+        scope: includeChildren ? 'Current group and child groups' : 'Current group'
+    };
+}
+
+async function refreshContextExportPreview() {
+    const data = await getContextExportData();
+    const options = {
+        includeDone: document.getElementById('context-include-done').checked,
+        includeImages: document.getElementById('context-include-images').checked,
+        instruction: document.getElementById('context-instruction').value
+    };
+    document.getElementById('context-export-scope').textContent = `${data.scope} · ${data.notes.length} note(s)`;
+    document.getElementById('context-export-preview').value = buildContextMarkdown(data.notes, data.groups, options);
+}
+
+async function openContextExportModal() {
+    await refreshContextExportPreview();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('contextExportModal')).show();
+}
+
+async function copyContextMarkdown() {
+    const preview = document.getElementById('context-export-preview');
+    await navigator.clipboard.writeText(preview.value);
+    showToast('Context Markdown copied');
+}
+
+function downloadContextMarkdown() {
+    const content = document.getElementById('context-export-preview').value;
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `memable_context_${new Date().toISOString().slice(0, 10)}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
 }
 
 async function handleImport(file) {
@@ -850,7 +1232,7 @@ async function handleImport(file) {
                 tx.objectStore('groups').clear();
 
                 for (const g of normalized.groups) tx.objectStore('groups').add(g);
-                for (const n of normalized.notes) tx.objectStore('notes').add(n);
+                for (const n of normalized.notes) tx.objectStore('notes').add(serializeNoteForStorage(n));
 
                 tx.oncomplete = () => {
                     alert('Import successful! Reloading...');
@@ -1120,6 +1502,7 @@ async function updateGroupKanbanColumns(group, nextColumns) {
             if (note.kanbanColumnId !== targetColumnId) {
                 note.kanbanColumnId = targetColumnId;
                 note.kanbanOrder = nextOrderByColumn.get(targetColumnId) || 0;
+                touchNote(note);
                 nextOrderByColumn.set(targetColumnId, note.kanbanOrder + 1);
                 changedNotes.push(note);
             }
@@ -1163,9 +1546,53 @@ async function editNoteTitle(note) {
     if (normalizedTitle === currentTitle) return;
 
     note.title = normalizedTitle;
+    touchNote(note);
     await updateNoteDB(note);
     renderWorkspace();
     await assignNoteIds();
+}
+
+function showNoteMetadataModal(note) {
+    const modalElement = document.getElementById('noteMetadataModal');
+    const titleInput = document.getElementById('note-metadata-title');
+    const tagsInput = document.getElementById('note-metadata-tags');
+    const sourceInput = document.getElementById('note-metadata-source-url');
+    const datesElement = document.getElementById('note-metadata-dates');
+    const saveButton = document.getElementById('note-metadata-save');
+    const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+
+    titleInput.value = note.title || '';
+    tagsInput.value = (note.tags || []).join(', ');
+    sourceInput.value = note.source?.url || '';
+    datesElement.textContent = `Created: ${note.createdAt || '-'} · Updated: ${note.updatedAt || '-'}`;
+
+    const save = async () => {
+        note.title = normalizeNoteTitle(titleInput.value);
+        note.tags = [...new Set(tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean))];
+        const sourceUrl = sourceInput.value.trim();
+        note.source = { type: sourceUrl ? 'url' : 'manual', url: sourceUrl || null };
+        touchNote(note);
+        await updateNoteDB(note);
+        saveButton.removeEventListener('click', save);
+        modal.hide();
+        renderWorkspace();
+        await assignNoteIds();
+    };
+    saveButton.addEventListener('click', save, { once: true });
+    modalElement.addEventListener('hidden.bs.modal', () => saveButton.removeEventListener('click', save), { once: true });
+    modal.show();
+}
+
+function createMetadataButton(note) {
+    const button = document.createElement('button');
+    button.className = 'btn';
+    button.innerHTML = '<span class="material-symbols-outlined">label</span>';
+    button.title = note.tags?.length ? `Tags: ${note.tags.join(', ')}` : 'Edit title, tags, and source';
+    button.addEventListener('click', e => {
+        e.stopPropagation();
+        showNoteMetadataModal(note);
+    });
+    return button;
 }
 
 function createNoteTitleElement(note) {
@@ -1430,6 +1857,8 @@ async function moveGroup(draggedId, targetId, position) {
 
 async function switchGroup(groupId) {
     if (currentGroupId === groupId) return;
+    selectedNoteIds.clear();
+    updateContextExportButton();
     currentGroupId = groupId;
     localStorage.setItem('currentGroupId', currentGroupId);
 
@@ -1471,6 +1900,7 @@ function renderWorkspace() {
     workspace.ondrop = null;
     workspace.ondragleave = null;
     workspace.classList.toggle('kanban-mode', isCurrentGroupKanban());
+    updateContextExportButton();
 
     if (isCurrentGroupKanban()) {
         renderKanbanBoard();
@@ -1523,6 +1953,7 @@ function renderKanbanBoard() {
                 .filter(n => n.groupId === currentGroupId && n.kanbanColumnId === column.id)
                 .reduce((acc, n) => Math.max(acc, Number.isFinite(n.kanbanOrder) ? n.kanbanOrder : 0), -1);
             note.kanbanOrder = maxOrder + 1;
+            touchNote(note);
             await updateNoteDB(note);
             renderWorkspace();
             await assignNoteIds();
@@ -1564,6 +1995,7 @@ function renderKanbanBoard() {
         note.x = snap(Math.max(0, rawX));
         note.y = snap(Math.max(0, rawY));
         note.kanbanOrder = 0;
+        touchNote(note);
         await updateNoteDB(note);
         renderWorkspace();
         await assignNoteIds();
@@ -1649,6 +2081,8 @@ function renderKanbanCard(note) {
     deleteBtn.title = '削除';
     deleteBtn.addEventListener('click', async () => {
         lastDeletedNote = { ...note };
+        selectedNoteIds.delete(note.id);
+        updateContextExportButton();
         notes = notes.filter(n => n.id !== note.id);
         await deleteNoteDB(note.id);
         renderWorkspace();
@@ -1657,7 +2091,11 @@ function renderKanbanCard(note) {
         showToast('Note deleted. Press Ctrl+Z to undo.');
     });
 
+    const selectBtn = createSelectionButton(note);
+    const metadataBtn = createMetadataButton(note);
     actionsEl.appendChild(colorPanel);
+    actionsEl.appendChild(selectBtn);
+    actionsEl.appendChild(metadataBtn);
     actionsEl.appendChild(copyBtn);
     actionsEl.appendChild(deleteBtn);
     headerMainEl.appendChild(idEl);
@@ -1668,13 +2106,7 @@ function renderKanbanCard(note) {
     const contentEl = document.createElement('div');
     contentEl.className = 'kanban-card-content';
     if (note.type === 'text') {
-        contentEl.contentEditable = 'true';
-        contentEl.spellcheck = false;
-        contentEl.textContent = note.content;
-        contentEl.addEventListener('blur', async () => {
-            note.content = getEditablePlainText(contentEl);
-            await updateNoteDB(note);
-        });
+        setupMarkdownEditor(contentEl, note);
     } else {
         const img = document.createElement('img');
         img.src = note.content;
@@ -1684,6 +2116,7 @@ function renderKanbanCard(note) {
 
     cardEl.appendChild(headerEl);
     cardEl.appendChild(contentEl);
+    attachNoteSelection(cardEl, headerEl, note);
     targetColumn.appendChild(cardEl);
 }
 
@@ -1804,7 +2237,7 @@ async function alignNotes() {
         note.x = currentX;
         note.y = currentY;
 
-        const request = store.put(note);
+        const request = store.put(serializeNoteForStorage(note));
         updates.push(new Promise((resolve, reject) => {
             request.onsuccess = () => resolve();
             request.onerror = () => reject(request.error);
@@ -2022,12 +2455,18 @@ function renderNote(note) {
 
             note.kanbanColumnId = targetColumnId;
             note.kanbanOrder = maxOrder + 1;
+            touchNote(note);
             await updateNoteDB(note);
             renderWorkspace();
             await assignNoteIds();
         });
         actions.appendChild(moveToKanbanBtn);
     }
+
+    const selectBtn = createSelectionButton(note);
+    actions.appendChild(selectBtn);
+    const metadataBtn = createMetadataButton(note);
+    actions.appendChild(metadataBtn);
 
     // copy button
     const copyBtn = document.createElement('button');
@@ -2057,9 +2496,11 @@ function renderNote(note) {
     const content = document.createElement('div');
     content.className = 'note-content';
     if (note.type === 'text') {
-        content.textContent = note.content;
-        content.contentEditable = "true"; // HTML5 contenteditable を有効化
-        content.spellcheck = false;
+        setupMarkdownEditor(content, note, () => {
+            autoResizeNote(noteEl, note);
+            const currentSizeEl = noteEl.querySelector('.note-size');
+            if (currentSizeEl) currentSizeEl.textContent = formatNoteSize(note.content);
+        });
     } else if (note.type === 'image') {
         const img = document.createElement('img');
         img.src = note.content;
@@ -2075,6 +2516,7 @@ function renderNote(note) {
     noteEl.appendChild(sizeEl);
 
     workspace.appendChild(noteEl);
+    attachNoteSelection(noteEl, header, note);
 
 
 
@@ -2173,6 +2615,7 @@ function renderNote(note) {
 
                         notes[idx].kanbanColumnId = targetColumnId;
                         notes[idx].kanbanOrder = maxOrder + 1;
+                        touchNote(notes[idx]);
                         await updateNoteDB(notes[idx]);
                         renderWorkspace();
                         await assignNoteIds();
@@ -2228,6 +2671,8 @@ function renderNote(note) {
     deleteBtn.addEventListener('click', async () => {
         // 保存（1つ分のみ）
         lastDeletedNote = { ...note };
+        selectedNoteIds.delete(note.id);
+        updateContextExportButton();
 
         disconnectNoteObserver(note.id);
         workspace.removeChild(noteEl);
@@ -2238,31 +2683,6 @@ function renderNote(note) {
 
         showToast('Note deleted. Press Ctrl+Z to undo.');
     });
-
-    // edit logic
-    if (note.type === 'text') {
-        content.addEventListener('input', () => {
-            note.content = getEditablePlainText(content);
-            autoResizeNote(noteEl, note);
-
-            // update size display
-            const sizeEl = noteEl.querySelector('.note-size');
-            if (sizeEl) sizeEl.textContent = formatNoteSize(note.content);
-        });
-
-        content.addEventListener('blur', async () => {
-            note.content = getEditablePlainText(content);
-            await updateNoteDB(note);
-        });
-
-        // Cmd/Ctrl + Enter で編集終了（フォーカスを外す）
-        content.addEventListener('keydown', e => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                content.blur();
-            }
-        });
-    }
 
     content.addEventListener('dblclick', () => {
         if (note.type === 'image') {
@@ -2519,6 +2939,8 @@ globalDropZone.addEventListener('drop', async e => {
 // clear all
 clearAllButton.addEventListener('click', async () => {
     if (confirm('Are you sure you want to delete all notes in this group?')) {
+        selectedNoteIds.clear();
+        updateContextExportButton();
         await clearAllNotesDB(currentGroupId);
         notes = [];
         cleanupNoteObservers();
@@ -2658,12 +3080,19 @@ workspace.addEventListener('mouseleave', () => {
     const zoomOutBtn = document.getElementById('zoom-out-button');
     const zoomResetBtn = document.getElementById('zoom-reset-button');
     const zoomInBtn = document.getElementById('zoom-in-button');
+    const contextExportBtn = document.getElementById('context-export-button');
     const changeStorageBtn = document.getElementById('change-storage-button');
     const exportBtn = document.getElementById('export-button');
     const importInput = document.getElementById('import-input');
     const toggleSidebarBtn = document.getElementById('toggle-sidebar-button');
     const sidebar = document.getElementById('sidebar');
     const sidebarResizer = document.getElementById('sidebar-resizer');
+
+    if (contextExportBtn) contextExportBtn.addEventListener('click', openContextExportModal);
+    document.getElementById('context-copy-button')?.addEventListener('click', copyContextMarkdown);
+    document.getElementById('context-download-button')?.addEventListener('click', downloadContextMarkdown);
+    ['context-include-children', 'context-include-done', 'context-include-images', 'context-instruction']
+        .forEach(id => document.getElementById(id)?.addEventListener('input', refreshContextExportPreview));
 
     const savedSidebarWidth = Number(localStorage.getItem('sidebarWidth'));
     const initialSidebarWidth = Number.isFinite(savedSidebarWidth)
