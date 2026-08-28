@@ -6,6 +6,8 @@ let storageMode = 'indexeddb'; // 'indexeddb' or 'external'
 let externalPath = null;
 let globalShortcutsEnabled = false;
 let isSyncing = false; // 外部同期中フラグ（ループ防止）
+let pendingExternalSync = false;
+let externalSyncPromise = null;
 const storageKey = 'memableNotes';
 const DEFAULT_GROUP_ID = 'default';
 const DEFAULT_KANBAN_TODO_COLUMN = { id: 'todo', name: 'ToDo' };
@@ -44,6 +46,49 @@ function disconnectNoteObserver(noteId) {
 function cleanupNoteObservers() {
     noteResizeObservers.forEach(observer => observer.disconnect());
     noteResizeObservers.clear();
+}
+
+function isNoteEditorActive() {
+    const activeElement = document.activeElement;
+    return activeElement instanceof HTMLElement
+        && activeElement.isContentEditable
+        && Boolean(activeElement.closest('.note-content, .kanban-card-content'));
+}
+
+async function applyExternalDataChange() {
+    if (externalSyncPromise) {
+        pendingExternalSync = true;
+        return externalSyncPromise;
+    }
+
+    isSyncing = true;
+    externalSyncPromise = (async () => {
+        console.log('External data change detected. Syncing...');
+        await syncFromExternalIfNeeded();
+        cleanupNoteObservers();
+        workspace.innerHTML = '';
+        notes = [];
+        await loadNotes();
+        showToast('Sync updated from external storage');
+    })();
+
+    try {
+        await externalSyncPromise;
+    } finally {
+        externalSyncPromise = null;
+        isSyncing = false;
+    }
+
+    if (pendingExternalSync && !isNoteEditorActive()) {
+        pendingExternalSync = false;
+        await applyExternalDataChange();
+    }
+}
+
+async function flushPendingExternalSync() {
+    if (!pendingExternalSync || isNoteEditorActive() || externalSyncPromise) return;
+    pendingExternalSync = false;
+    await applyExternalDataChange();
 }
 async function initSettings() {
     if (window.electronAPI) {
@@ -380,6 +425,7 @@ function setupMarkdownEditor(element, note, onInput = null) {
         if (note.content !== originalContent) touchNote(note);
         await updateNoteDB(note);
         renderMarkdownInto(element, note.content);
+        await flushPendingExternalSync();
     });
     element.addEventListener('mousedown', e => {
         const link = e.target.closest('.internal-note-link');
@@ -751,13 +797,15 @@ function normalizeBackupPayload(payload) {
             : { type: 'manual', url: null };
 
         const presentation = note.presentation && typeof note.presentation === 'object' ? note.presentation : {};
-        note.x = Number.isFinite(presentation.x) ? presentation.x : (Number.isFinite(note.x) ? note.x : 10);
-        note.y = Number.isFinite(presentation.y) ? presentation.y : (Number.isFinite(note.y) ? note.y : 10);
-        note.width = Number.isFinite(presentation.width) ? presentation.width : (Number.isFinite(note.width) ? note.width : (note.type === 'image' ? 200 : 250));
-        note.height = Number.isFinite(presentation.height) ? presentation.height : (Number.isFinite(note.height) ? note.height : 200);
-        const presentationColor = presentation.color || note.color;
+        // Runtime updates use the top-level presentation fields. Stored Markdown
+        // snapshots only have the nested presentation object, so use it as fallback.
+        note.x = Number.isFinite(note.x) ? note.x : (Number.isFinite(presentation.x) ? presentation.x : 10);
+        note.y = Number.isFinite(note.y) ? note.y : (Number.isFinite(presentation.y) ? presentation.y : 10);
+        note.width = Number.isFinite(note.width) ? note.width : (Number.isFinite(presentation.width) ? presentation.width : (note.type === 'image' ? 200 : 250));
+        note.height = Number.isFinite(note.height) ? note.height : (Number.isFinite(presentation.height) ? presentation.height : 200);
+        const presentationColor = note.color || presentation.color;
         note.color = COLORS.some(color => color.name === presentationColor) ? presentationColor : defaultNoteColor;
-        note.zIndex = Number.isFinite(presentation.zIndex) ? presentation.zIndex : (Number.isFinite(note.zIndex) ? note.zIndex : 100);
+        note.zIndex = Number.isFinite(note.zIndex) ? note.zIndex : (Number.isFinite(presentation.zIndex) ? presentation.zIndex : 100);
         note.presentation = {
             x: note.x,
             y: note.y,
@@ -2312,34 +2360,26 @@ async function handleCopy(note, copyButton = null) {
     showIconFeedback(note, copyButton);
 }
 
-// テキストに合わせてノートの高さを自動調整する関数
+// 内容が収まらない場合だけノートの高さを広げる
 function autoResizeNote(noteEl, note) {
     if (note.type !== 'text') return;
     const content = noteEl.querySelector('.note-content');
     if (!content) return;
 
-    // 一旦高さをautoにして実際の内容量を確認
-    const originalHeight = noteEl.style.height;
-    noteEl.style.height = 'auto';
-    const headerHeight = noteEl.querySelector('.note-header').offsetHeight;
-    const contentHeight = content.scrollHeight;
-    const padding = 24; // .note-content の上下 padding 合計付近
+    const overflowHeight = content.scrollHeight - content.clientHeight;
+    if (overflowHeight <= 1) return;
 
-    const newHeight = headerHeight + contentHeight + padding;
+    const currentHeight = noteEl.offsetHeight;
+    const requiredHeight = currentHeight + overflowHeight;
+    const finalHeight = isGridSnap
+        ? Math.ceil(requiredHeight / 25) * 25
+        : Math.ceil(requiredHeight);
 
-    // スナップさせる
-    const snappedHeight = snap(newHeight);
-
-    // 最小サイズを下回らないように
-    const finalHeight = Math.max(snappedHeight, 100);
+    if (finalHeight <= currentHeight) return;
 
     noteEl.style.height = finalHeight + 'px';
-
-    // DB更新
-    if (parseInt(originalHeight) !== finalHeight) {
-        note.height = finalHeight;
-        updateNoteDB(note);
-    }
+    note.height = finalHeight;
+    updateNoteDB(note);
 }
 
 // create and append note element
@@ -2633,14 +2673,7 @@ function renderNote(note) {
 
     disconnectNoteObserver(note.id);
     // リサイズ処理: ResizeObserver でリサイズ後をDBに保存
-    // 初回コールをスキップするフラグ
-    let isInitialResize = true;
     const resizeObserver = new ResizeObserver(entries => {
-        if (isInitialResize) {
-            // 初期描画時のNotifyを無視
-            isInitialResize = false;
-            return;
-        }
         for (const entry of entries) {
             // 外側の幅・高さを取得（padding/borderを含む）
             // 整数値に丸めることで、微細な端数によるループ保存やリサイズ誤差を防ぐ
@@ -3223,26 +3256,11 @@ workspace.addEventListener('mouseleave', () => {
     // 外部ファイルの変更検知ハンドラ
     if (window.electronAPI && window.electronAPI.onExternalDataChanged) {
         window.electronAPI.onExternalDataChanged(async () => {
-            if (isSyncing) return;
-            isSyncing = true;
-
-            try {
-                console.log('External data change detected. Syncing...');
-                await syncFromExternalIfNeeded();
-
-                // UIをリフレッシュ
-                cleanupNoteObservers();
-                workspace.innerHTML = '';
-                notes = [];
-                await loadNotes();
-
-                showToast('Sync updated from external storage');
-            } finally {
-                // 短時間に連続して発生するのを防ぐため、少し待ってからロック解除
-                setTimeout(() => {
-                    isSyncing = false;
-                }, 1000);
+            if (isSyncing || isNoteEditorActive()) {
+                pendingExternalSync = true;
+                return;
             }
+            await applyExternalDataChange();
         });
     }
 })();

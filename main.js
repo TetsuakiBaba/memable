@@ -1,6 +1,7 @@
 const { app, BrowserWindow, globalShortcut, clipboard, nativeImage, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { exec } = require('child_process');
 
 const { updateElectronApp } = require('update-electron-app');
@@ -18,7 +19,7 @@ if (!gotSingleInstanceLock) {
 const configPath = path.join(app.getPath('userData'), 'config.json');
 let config = { externalPath: null, globalShortcutsEnabled: false };
 let watchers = [];
-let lastInternalWriteTime = 0;
+let lastKnownExternalHash = null;
 let externalChangeTimer = null;
 
 const NOTE_FILE_VERSION = 2;
@@ -28,13 +29,46 @@ function ensureDirectory(dirPath) {
 }
 
 function writeTextAtomic(filePath, content) {
+    if (fs.existsSync(filePath) && fs.readFileSync(filePath, 'utf8') === content) {
+        return false;
+    }
     const tempPath = `${filePath}.tmp`;
     fs.writeFileSync(tempPath, content, 'utf8');
     fs.renameSync(tempPath, filePath);
+    return true;
 }
 
 function writeJsonAtomic(filePath, value) {
-    writeTextAtomic(filePath, JSON.stringify(value, null, 2));
+    return writeTextAtomic(filePath, JSON.stringify(value, null, 2));
+}
+
+function getExternalDataHash(basePath = config.externalPath) {
+    if (!basePath || !fs.existsSync(basePath)) return null;
+
+    try {
+        const files = ['notes.json', 'groups.json', 'layout.json', 'index.json'];
+        const notesDir = path.join(basePath, 'notes');
+        if (fs.existsSync(notesDir)) {
+            fs.readdirSync(notesDir)
+                .filter(filename => filename.endsWith('.md'))
+                .sort()
+                .forEach(filename => files.push(path.join('notes', filename)));
+        }
+
+        const hash = crypto.createHash('sha256');
+        files.forEach(relativePath => {
+            const filePath = path.join(basePath, relativePath);
+            if (!fs.existsSync(filePath)) return;
+            hash.update(relativePath);
+            hash.update('\0');
+            hash.update(fs.readFileSync(filePath));
+            hash.update('\0');
+        });
+        return hash.digest('hex');
+    } catch (error) {
+        console.error('Failed to fingerprint external data', error);
+        return null;
+    }
 }
 
 function noteFileName(id) {
@@ -218,17 +252,19 @@ function registerShortcuts() {
 function startWatching() {
     watchers.forEach(item => item.close());
     watchers = [];
+    lastKnownExternalHash = getExternalDataHash();
 
     if (config.externalPath && fs.existsSync(config.externalPath)) {
         console.log(`Watching for changes in: ${config.externalPath}`);
         const notifyChange = (eventType, filename) => {
-            // 自分の書き込みから1秒以内なら無視
-            if (Date.now() - lastInternalWriteTime < 1000) return;
             const relevant = !filename || filename === 'notes.json' || filename === 'groups.json'
                 || filename === 'layout.json' || filename === 'index.json' || String(filename).endsWith('.md');
             if (!relevant) return;
             clearTimeout(externalChangeTimer);
             externalChangeTimer = setTimeout(() => {
+                const currentHash = getExternalDataHash();
+                if (currentHash && currentHash === lastKnownExternalHash) return;
+                lastKnownExternalHash = currentHash;
                 if (mainWindow) mainWindow.webContents.send('external-data-changed');
             }, 250);
         };
@@ -306,9 +342,9 @@ ipcMain.handle('reset-config', () => {
 ipcMain.handle('save-external-data', async (event, filename, data) => {
     if (!config.externalPath) return false;
     try {
-        lastInternalWriteTime = Date.now();
         const filePath = path.join(config.externalPath, filename);
         fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+        lastKnownExternalHash = getExternalDataHash();
         return true;
     } catch (e) {
         console.error(`Failed to save ${filename}`, e);
@@ -332,9 +368,9 @@ ipcMain.handle('load-external-data', async (event, filename) => {
 ipcMain.handle('save-external-snapshot', async (event, snapshot) => {
     if (!config.externalPath) return false;
     try {
-        lastInternalWriteTime = Date.now();
         const notesDirectoryAlreadyExists = fs.existsSync(path.join(config.externalPath, 'notes'));
         const saved = saveExternalSnapshot(snapshot || {});
+        lastKnownExternalHash = getExternalDataHash();
         if (!notesDirectoryAlreadyExists) startWatching();
         return saved;
     } catch (e) {
