@@ -13,7 +13,8 @@
         "start": "electron-forge start",
         "package": "electron-forge package",
         "make": "electron-forge make",
-        "publish": "electron-forge publish"
+        "publish": "electron-forge publish",
+        "verify:release:macos": "node scripts/verify-macos-release.js"
     },
     "devDependencies": {
         "@electron-forge/cli": "^6.4.2",
@@ -28,7 +29,8 @@
     },
     "forge": {
         "packagerConfig": {
-            "icon": "icons/icon"
+            "icon": "icons/icon",
+            "appBundleId": "com.electron.memable"
         },
         "makers": [
             {

@@ -95,7 +95,14 @@ npm run package
 
 # 4. Make distributables (Zip, DMG) in out/make
 npm run make
+
+# 5. Verify a macOS arm64 ZIP before publishing
+npm run verify:release:macos -- /path/to/memable-darwin-arm64-x.y.z.zip
 ```
+
+The release verification checks that the archive version matches `package.json`,
+the Bundle ID remains `com.electron.memable`, the executable includes arm64,
+and the application has a valid code signature.
 
 ### Key Desktop Features
 - **Auto-Update**: Automatically checks for and applies updates from GitHub Releases.
