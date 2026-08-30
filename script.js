@@ -434,12 +434,6 @@ function setupMarkdownEditor(element, note, onInput = null) {
         e.stopPropagation();
         openInternalNoteLink(link.dataset.noteRef);
     });
-    element.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            element.blur();
-        }
-    });
 }
 
 function attachNoteSelection(noteElement, headerElement, note) {
