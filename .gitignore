@@ -1,7 +1,16 @@
 .DS_Store
-node_modules/
-dist/
-.vscode/
 .env
-out/
-forge.config.js
+
+# Swift Package Manager / build output
+.build/
+.swiftpm/
+build/
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# Editor
+.vscode/
+
+# Signing / notarization secrets
+*.p8
+*.p12
