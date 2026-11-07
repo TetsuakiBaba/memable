@@ -24,7 +24,15 @@ A temporary copy-and-paste sticky-note app for macOS, written in Swift / SwiftUI
 - To build: Xcode 16 or later (Swift 5.10+ toolchain)
 
 ## Installation
-Download the latest `memable-x.y.z-macos.zip` from [GitHub Releases](https://github.com/TetsuakiBaba/memable/releases), unzip it and move `memable.app` to `/Applications`.
+1. Download `memable-x.y.z-macos.zip` from the [latest release](https://github.com/TetsuakiBaba/memable/releases/latest).
+   The app is a universal binary (Apple silicon + Intel), signed with Developer ID and notarized by Apple.
+2. Unzip it and move `memable.app` to `/Applications`.
+3. Optional: to use **Global Quick Paste** (`⌘⌥ + key`), turn it on in **Settings → Shortcuts** and allow memable in
+   **System Settings → Privacy & Security → Accessibility**.
+
+> **Upgrading from 1.x (Electron)?** Version 2 is a new native app with a new bundle identifier, so the old app
+> does not update itself. Download 2.x manually; your sync folder is picked up automatically on first launch
+> (see [Migrating from the Electron version](#migrating-from-the-electron-version)). The old app can then be deleted.
 
 ## Build from source
 ```bash
@@ -75,7 +83,8 @@ The app version is kept in [`VERSION`](./VERSION).
    This runs the tests, builds a universal (arm64 + x86_64) app signed with Developer ID,
    notarizes it with the App Store Connect API key and staples the ticket, pushes the `vX.Y.Z` tag and creates a **draft** GitHub release
    with `memable-X.Y.Z-macos.zip` attached.
-3. Open the draft on GitHub, edit the release notes and press **Publish release**.
+3. Open the draft on GitHub, edit the release notes and press **Publish release**
+   (or `gh release edit vX.Y.Z --notes-file notes.md --draft=false`).
 
 The steps can also be run one by one: `CODESIGN_IDENTITY="Developer ID Application: …" UNIVERSAL=1 scripts/build-app.sh`,
 `scripts/notarize.sh`, then `gh release create vX.Y.Z build/memable-X.Y.Z-macos.zip --draft --generate-notes`.
