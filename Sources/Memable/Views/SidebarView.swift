@@ -6,16 +6,9 @@ struct SidebarView: View {
     @Environment(MemableStore.self) private var store
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
-                ForEach(visibleRows, id: \.group.id) { row in
-                    GroupRowView(group: row.group, depth: row.depth)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
+        // Header and list are stacked (not `.safeAreaInset`) so the list does not get the
+        // toolbar's automatic top inset a second time and drift down the sidebar.
+        VStack(spacing: 0) {
             HStack {
                 Text("Groups")
                     .font(.subheadline.weight(.semibold))
@@ -29,6 +22,16 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(visibleRows, id: \.group.id) { row in
+                        GroupRowView(group: row.group, depth: row.depth)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
         }
     }
 
