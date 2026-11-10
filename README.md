@@ -13,6 +13,7 @@ A temporary copy-and-paste sticky-note app for macOS, written in Swift / SwiftUI
 - **Groups** in a sidebar: nest, reorder by drag & drop, rename, delete
 - **Kanban mode** per group with custom steps between the fixed ToDo / Done columns, plus free notes on the board
 - **Image notes** via paste (`⌘V`) or drag & drop; double-click to enlarge
+- **File attachments**: drop a file onto a note to copy it into the storage folder and insert a Markdown link (`[a.pdf](../files/a.pdf)`)
 - **LLM Context Export**: copy or save selected notes, a group, or a group tree as structured Markdown
 - **Metadata**: stable IDs, titles, tags, source URLs, created/updated timestamps
 - **Multi-device sync** through any folder (Dropbox, iCloud Drive …), one Markdown file per note, with live reload

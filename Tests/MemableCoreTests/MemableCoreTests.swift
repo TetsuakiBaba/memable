@@ -192,3 +192,36 @@ final class SyncFolderCompatibilityTests: XCTestCase {
         }
     }
 }
+
+final class AttachmentTests: XCTestCase {
+    func testImportCopiesFileAndBuildsRelativeLink() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("src/議事録 (draft).pdf")
+        try fm.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: source)
+        let folder = LibraryFolder(url: dir.appendingPathComponent("lib"))
+
+        let link = try folder.importAttachment(from: source)
+        XCTAssertEqual(link, "[議事録 (draft).pdf](../files/議事録%20%28draft%29.pdf)")
+        XCTAssertTrue(fm.fileExists(atPath: dir.appendingPathComponent("lib/files/議事録 (draft).pdf").path))
+        XCTAssertEqual(try folder.importAttachment(from: source), link, "identical file is reused")
+
+        try Data("b".utf8).write(to: source)
+        XCTAssertEqual(try folder.importAttachment(from: source), "[議事録 (draft) 2.pdf](../files/議事録%20%28draft%29%202.pdf)")
+
+        let destination = try XCTUnwrap(MarkdownParser.parseInline(link).compactMap { inline -> String? in
+            if case .fileLink(_, let path) = inline { return path }
+            return nil
+        }.first)
+        XCTAssertEqual(folder.attachmentURL(forLink: destination)?.lastPathComponent, "議事録 (draft).pdf")
+        XCTAssertNil(folder.attachmentURL(forLink: "../files/../index.json"))
+    }
+
+    func testFileLinkParsing() {
+        XCTAssertEqual(MarkdownParser.parseInline("see [a.pdf](../files/a.pdf) and [b](https://e.com)"),
+                       [.text("see "), .fileLink(label: "a.pdf", path: "../files/a.pdf"), .text(" and "), .link(label: "b", url: "https://e.com")])
+        XCTAssertEqual(MarkdownParser.parseInline("[x](../other/a.pdf)"), [.text("[x](../other/a.pdf)")])
+    }
+}

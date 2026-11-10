@@ -2,13 +2,15 @@ import Foundation
 
 /// Lightweight Markdown subset used for note previews:
 /// headings (#–####), bullet / numbered lists, quotes, fenced code,
-/// and inline `code`, **bold**, [links](https://…) and [[internal links]].
+/// and inline `code`, **bold**, [links](https://…), [file links](../files/…) and [[internal links]].
 public enum MarkdownParser {
     public enum Inline: Equatable, Sendable {
         case text(String)
         case bold(String)
         case code(String)
         case link(label: String, url: String)
+        /// Link to a file in the library's `files/` folder, e.g. `[a.pdf](../files/a.pdf)`.
+        case fileLink(label: String, path: String)
         case internalLink(String)
     }
 
@@ -66,7 +68,7 @@ public enum MarkdownParser {
     }
 
     public static func parseInline(_ text: String) -> [Inline] {
-        let pattern = /(\[\[[^\]\n]+\]\]|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*)/
+        let pattern = /(\[\[[^\]\n]+\]\]|\[[^\]\n]+\]\((?:https?:\/\/|\.\.\/files\/)[^)\s]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*)/
         var result: [Inline] = []
         var cursor = text.startIndex
         for match in text.matches(of: pattern) {
@@ -76,8 +78,13 @@ public enum MarkdownParser {
             let token = String(match.output.0)
             if token.hasPrefix("[[") {
                 result.append(.internalLink(String(token.dropFirst(2).dropLast(2)).trimmingCharacters(in: .whitespaces)))
-            } else if token.hasPrefix("["), let link = token.firstMatch(of: /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/) {
-                result.append(.link(label: String(link.1), url: String(link.2)))
+            } else if token.hasPrefix("["), let link = token.firstMatch(of: /^\[([^\]]+)\]\(([^)]+)\)$/) {
+                let destination = String(link.2)
+                if FileAttachments.isAttachmentLink(destination) {
+                    result.append(.fileLink(label: String(link.1), path: destination))
+                } else {
+                    result.append(.link(label: String(link.1), url: destination))
+                }
             } else if token.hasPrefix("`") {
                 result.append(.code(String(token.dropFirst().dropLast())))
             } else {

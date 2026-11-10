@@ -393,7 +393,7 @@ struct SettingsView: View {
             } header: {
                 Text("Storage")
             } footer: {
-                Text("Sync with an external folder (Dropbox, iCloud Drive …). Each note is a Markdown file in notes/, images go to assets/, and layout.json keeps positions.")
+                Text("Sync with an external folder (Dropbox, iCloud Drive …). Each note is a Markdown file in notes/, images go to assets/, dropped files to files/, and layout.json keeps positions.")
             }
             Section("Data Backup") {
                 HStack {

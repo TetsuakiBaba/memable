@@ -7,6 +7,7 @@ import Foundation
 /// <folder>/
 /// ├── notes/       one Markdown file per note (frontmatter + body)
 /// ├── assets/      image-note files
+/// ├── files/       files dropped onto notes (linked from the note Markdown)
 /// ├── groups.json
 /// ├── layout.json  positions, sizes, colors and stacking order
 /// └── index.json
@@ -217,7 +218,7 @@ public final class LibraryFolder {
 
     /// Removes everything this app writes (used by "Reset to Default" on the local library only).
     public func removeLibraryFiles() {
-        for name in ["notes", "assets", "groups.json", "layout.json", "index.json", "notes.json"] {
+        for name in ["notes", "assets", FileAttachments.folderName, "groups.json", "layout.json", "index.json", "notes.json"] {
             try? fileManager.removeItem(at: url.appendingPathComponent(name))
         }
     }

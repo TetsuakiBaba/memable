@@ -1,6 +1,7 @@
 import AppKit
 import MemableCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum NoteLayout {
     static let headerHeight: CGFloat = 36
@@ -127,6 +128,7 @@ struct NoteTextBody: View {
 
     @State private var isEditing = false
     @State private var originalContent = ""
+    @State private var isFileDropTargeted = false
 
     var body: some View {
         Group {
@@ -134,16 +136,19 @@ struct NoteTextBody: View {
                 PlainTextEditor(
                     text: Binding(get: { store.note(note.id)?.content ?? "" },
                                   set: { store.setContent(note.id, $0); didChange($0) }),
-                    onEndEditing: endEditing
+                    onEndEditing: endEditing,
+                    onDropFiles: { urls, insert in store.importAttachments(urls) { insert($0.joined(separator: "\n")) } }
                 )
                 .frame(height: fillsFrame ? nil : editorHeight)
             } else if fillsFrame {
                 ScrollView(.vertical) { preview }
                     .scrollIndicators(.automatic)
+                    .modifier(fileDrop)
             } else {
                 preview
                     .frame(maxHeight: 240, alignment: .top)
                     .clipped()
+                    .modifier(fileDrop)
             }
         }
         .onAppear { if store.focusRequestNoteId == note.id { beginEditing() } }
@@ -163,6 +168,11 @@ struct NoteTextBody: View {
                     if store.lastLinkOpen.map({ clickTime.timeIntervalSince($0) < 0.5 }) != true { beginEditing() }
                 }
             }
+    }
+
+    /// Dropping files on the preview saves them to `files/` and appends Markdown links.
+    private var fileDrop: FileDropModifier {
+        FileDropModifier(isTargeted: $isFileDropTargeted) { urls in store.attachFiles(urls, to: note.id) }
     }
 
     private var editorHeight: CGFloat {
@@ -231,6 +241,10 @@ struct MarkdownPreview: View {
                 store.openInternalLink(reference.removingPercentEncoding ?? reference)
                 return .handled
             }
+            if url.scheme == MarkdownRenderer.fileScheme {
+                store.openAttachment(String(url.absoluteString.dropFirst(MarkdownRenderer.fileScheme.count + 1)))
+                return .handled
+            }
             return .systemAction
         })
     }
@@ -238,6 +252,8 @@ struct MarkdownPreview: View {
 
 enum MarkdownRenderer {
     static let internalScheme = "memable-note"
+    /// `memable-file:<relative path>` wraps `../files/…` links so the store can resolve them.
+    static let fileScheme = "memable-file"
 
     static func attributedString(_ markdown: String) -> AttributedString {
         var result = AttributedString()
@@ -297,6 +313,12 @@ enum MarkdownRenderer {
                 part.link = URL(string: url)
                 part.underlineStyle = .single
                 result += part
+            case .fileLink(let label, let path):
+                var part = AttributedString("📎 " + label)
+                let encoded = (path.removingPercentEncoding ?? path).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+                part.link = URL(string: "\(fileScheme):\(encoded)")
+                part.underlineStyle = .single
+                result += part
             case .internalLink(let reference):
                 var part = AttributedString(reference)
                 var components = URLComponents()
@@ -315,16 +337,28 @@ enum MarkdownRenderer {
 struct PlainTextEditor: NSViewRepresentable {
     @Binding var text: String
     var onEndEditing: () -> Void
+    /// Files dropped into the editor; call the closure with the Markdown to insert at the drop point.
+    var onDropFiles: (([URL], @escaping (String) -> Void) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
+        let scrollView = NSScrollView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        let textView = FileDropTextView()
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        scrollView.documentView = textView
+        textView.onDropFiles = { [weak coordinator = context.coordinator] urls, insert in
+            coordinator?.parent.onDropFiles?(urls, insert) ?? insert(urls.map(\.path).joined(separator: "\n"))
+        }
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
@@ -354,6 +388,31 @@ struct PlainTextEditor: NSViewRepresentable {
         let selection = textView.selectedRanges
         textView.string = text
         textView.selectedRanges = selection
+    }
+
+    /// NSTextView that hands dropped file URLs to `onDropFiles` instead of inserting their paths.
+    final class FileDropTextView: NSTextView {
+        var onDropFiles: (([URL], @escaping (String) -> Void) -> Void)?
+
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            guard let onDropFiles,
+                  let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                                   options: [.urlReadingFileURLsOnly: true]) as? [URL],
+                  !urls.isEmpty else { return super.performDragOperation(sender) }
+            let index = characterIndexForInsertion(at: convert(sender.draggingLocation, from: nil))
+            window?.makeFirstResponder(self)
+            onDropFiles(urls) { [weak self] markdown in
+                guard let self else { return }
+                let length = (self.string as NSString).length
+                let location = min(max(0, index), length)
+                let range = NSRange(location: location, length: 0)
+                guard self.shouldChangeText(in: range, replacementString: markdown) else { return }
+                self.replaceCharacters(in: range, with: markdown)
+                self.didChangeText()
+                self.setSelectedRange(NSRange(location: location + (markdown as NSString).length, length: 0))
+            }
+            return true
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -410,5 +469,50 @@ extension Note {
     var sizeDescription: String {
         if type == .image { return "\(imageData?.count ?? 0) bytes" }
         return "\(content.count) chars / \(content.utf8.count) bytes"
+    }
+}
+
+/// Accepts file drops from Finder (in-app note drags and plain text are left to the canvas).
+struct FileDropModifier: ViewModifier {
+    @Binding var isTargeted: Bool
+    let onDrop: ([URL]) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+                let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+                guard !fileProviders.isEmpty else { return false }
+                let group = DispatchGroup()
+                let lock = NSLock()
+                var urls: [(Int, URL)] = []
+                for (index, provider) in fileProviders.enumerated() {
+                    group.enter()
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        if let url {
+                            lock.lock()
+                            urls.append((index, url))
+                            lock.unlock()
+                        }
+                        group.leave()
+                    }
+                }
+                group.notify(queue: .main) {
+                    let sorted = urls.sorted { $0.0 < $1.0 }.map(\.1)
+                    if !sorted.isEmpty { onDrop(sorted) }
+                }
+                return true
+            }
+            .overlay {
+                if isTargeted {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Theme.primary, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+                        .background(Theme.primary.opacity(0.08))
+                        .overlay(Label("Save file & insert link", systemImage: "paperclip")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Theme.primary))
+                        .padding(4)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 }

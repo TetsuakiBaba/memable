@@ -16,6 +16,7 @@
 - **Copy**: click the copy icon, or press the note's key.
 - **Delete**: click the trash icon. `⌘Z` restores it.
 - **Images and text**: drag & drop images or text onto the canvas, or press `⌘V` while no note is being edited. Double-click an image note to enlarge it.
+- **Files**: drop any file (PDF, document, folder …) onto a text note. It is copied into the storage folder (`files/`) and a Markdown link such as `[report.pdf](../files/report.pdf)` is added — at the end of the note, or at the drop position while editing. Click the 📎 link to open the file; `⌥`-click reveals it in Finder. Dropping a non-image file on empty canvas creates a new note with the link.
 - **Grid snap** (`⌥⌘G`) aligns movement to a 25 pt grid; **Align Notes** (`⌥⌘L`) lays notes out in rows.
 - **Zoom**: `⌘+`, `⌘-`, `⌘0`.
 
@@ -62,6 +63,6 @@ Global Quick Paste works while memable runs in the background. Enable it in **Se
 Open **Settings** with `⌘,`.
 
 - **Storage**: notes are saved automatically. Choose a sync folder (Dropbox, iCloud Drive …) to share notes between Macs; changes made on another Mac appear live. When the chosen folder already has notes you can load them or overwrite them.
-- Each note is a Markdown file in `notes/`, images are in `assets/`, and `layout.json` stores positions separately from the content.
-- **Export / Import JSON**: full backup of notes and groups (compatible with older versions). Importing replaces the current data.
+- Each note is a Markdown file in `notes/`, images are in `assets/`, files dropped onto notes are in `files/`, and `layout.json` stores positions separately from the content.
+- **Export / Import JSON**: full backup of notes and groups (compatible with older versions). Files in `files/` are not included; copy that folder separately. Importing replaces the current data.
 - **Reset to Default**: deletes local notes and settings (files in a sync folder are kept).

@@ -68,7 +68,7 @@ struct CanvasWorkspaceView: View {
                     .onTapGesture { NSApp.keyWindow?.makeFirstResponder(nil) }
 
                 if notes.isEmpty {
-                    Text("Double-click to create a note · ⌘V to paste · drop images here")
+                    Text("Double-click to create a note · ⌘V to paste · drop images or files here")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 14)

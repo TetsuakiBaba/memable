@@ -323,12 +323,14 @@ final class MemableStore {
                 library = folder
                 reloadFromDisk()
             case .alertSecondButtonReturn:
+                library.copyAttachments(to: folder)
                 library = folder
                 saveNow()
             default:
                 return
             }
         } else {
+            library.copyAttachments(to: folder)
             library = folder
             saveNow()
         }
@@ -341,7 +343,9 @@ final class MemableStore {
     func useLocalStorage() {
         guard externalPath != nil else { return }
         saveNow()
-        library = LibraryFolder(url: Self.localLibraryURL)
+        let local = LibraryFolder(url: Self.localLibraryURL)
+        library.copyAttachments(to: local)
+        library = local
         setExternalPath(nil)
         saveNow()
         startWatching()
@@ -608,8 +612,21 @@ final class MemableStore {
         var handled = false
         for (index, provider) in providers.enumerated() {
             let point = CGPoint(x: location.x + Double(index) * 25, y: location.y + Double(index) * 25)
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
-                || provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    let image = ImageImport.fromFile(url)
+                    DispatchQueue.main.async {
+                        let store = MemableStore.shared
+                        if let image {
+                            store.createImageNote(image, at: point)
+                        } else {
+                            store.createAttachmentNote([url], at: point)
+                        }
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 handled = true
                 ImageImport.load(from: provider) { payload in
                     DispatchQueue.main.async {
@@ -634,6 +651,61 @@ final class MemableStore {
             }
         }
         return handled
+    }
+
+    // MARK: - File attachments
+
+    /// Copies files into the library's `files/` folder off the main thread and returns their Markdown links.
+    func importAttachments(_ urls: [URL], completion: @escaping @MainActor ([String]) -> Void) {
+        let folder = LibraryFolder(url: library.url)
+        Task.detached(priority: .userInitiated) {
+            var links: [String] = []
+            var failures: [String] = []
+            for url in urls {
+                do { links.append(try folder.importAttachment(from: url)) } catch { failures.append(url.lastPathComponent) }
+            }
+            let imported = links
+            let failed = failures
+            await MainActor.run {
+                if !failed.isEmpty { MemableStore.shared.showToast("Could not save: \(failed.joined(separator: ", "))") }
+                guard !imported.isEmpty else { return }
+                completion(imported)
+            }
+        }
+    }
+
+    /// Drop on a note preview: saves the files and appends links to the note.
+    func attachFiles(_ urls: [URL], to noteId: String) {
+        importAttachments(urls) { [weak self] links in
+            guard let self else { return }
+            self.updateNote(noteId, touch: true) { note in
+                let separator = note.content.isEmpty || note.content.hasSuffix("\n") ? "" : "\n"
+                note.content += separator + links.joined(separator: "\n")
+            }
+            self.showToast(links.count == 1 ? "File saved" : "\(links.count) files saved")
+        }
+    }
+
+    /// Drop of non-image files on the canvas: a new text note listing the links.
+    func createAttachmentNote(_ urls: [URL], at point: CGPoint) {
+        let columnId = isKanban ? MemableConstants.freeCanvasColumnId : nil
+        importAttachments(urls) { [weak self] links in
+            self?.createTextNote(at: point, columnId: columnId, content: links.joined(separator: "\n"), focus: false)
+            self?.showToast(links.count == 1 ? "File saved" : "\(links.count) files saved")
+        }
+    }
+
+    /// Opens a `../files/…` link from a note (⌥-click reveals it in Finder instead).
+    func openAttachment(_ destination: String) {
+        guard let url = library.attachmentURL(forLink: destination), FileManager.default.fileExists(atPath: url.path) else {
+            showToast("File not found: \((destination.removingPercentEncoding ?? destination).replacingOccurrences(of: FileAttachments.linkPrefix, with: ""))")
+            return
+        }
+        if NSEvent.modifierFlags.contains(.option) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     func alignNotes() {
